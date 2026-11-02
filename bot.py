@@ -3,24 +3,7 @@
 aliSTREAM Live TV Bot - Production Ready Telegram Streaming Bot
 Framework: aiogram v3 (Modern Asynchronous Python Telegram Bot Framework)
 Environment: Optimized for Android Termux / Render.com / VPS / Linux / Windows
-Watermark: #Alistreamlive.bot
-=============================================================================
-
-DEPLOYMENT NOTES:
------------------
-1. Termux (Android):
-   $ pkg update && pkg upgrade -y
-   $ pkg install python git -y
-   $ pip install -r requirements.txt
-   $ python bot.py
-
-2. Render.com (Cloud Free Tier):
-   - Create as "Web Service" connected to your GitHub repo.
-   - Build Command: pip install -r requirements.txt
-   - Start Command: python bot.py
-   - Render sets the $PORT environment variable automatically.
-   - This script runs an internal HTTP health check server alongside
-     Telegram polling so Render health checks PASS (Live 🟢) and never times out!
+Watermark: #Alistreamlivebot
 =============================================================================
 """
 
@@ -30,6 +13,7 @@ import logging
 import os
 import sys
 import urllib.parse
+from pathlib import Path
 from typing import List, Tuple
 
 from aiohttp import web
@@ -39,6 +23,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     CopyTextButton,
     InlineKeyboardButton,
@@ -55,12 +40,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
 
 SUPABASE_URL = "https://ddywqmupodubrwlaflem.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h"
-WEB_APP_PLAYER_URL = (
+
+# Render automatically provides RENDER_EXTERNAL_URL (e.g. https://yourapp.onrender.com)
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
+FALLBACK_WEB_PLAYER = (
     "https://ddywqmupodubrwlaflem.supabase.co/storage/v1/object/public/web-player/index.html"
 )
-WATERMARK = "#Alistreamlive.bot"
+
+LOGO_URL = "https://a.top4top.io/p_39583wl340.png"
+WATERMARK = "#Alistreamlivebot"
 
 ITEMS_PER_PAGE = 8
+
+# Path to the bundled Web Player HTML file
+BASE_DIR = Path(__file__).resolve().parent
+WEB_PLAYER_FILE = BASE_DIR / "web_player" / "index.html"
 
 # ---------------------------------------------------------------------------
 # 2. CHANNELS DATA (SECURE BACKGROUND MAPPING)
@@ -123,6 +117,25 @@ TOTAL_CHANNELS = len(CHANNEL_LIST)
 TOTAL_PAGES = (TOTAL_CHANNELS + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
 
 
+def get_web_player_base_url() -> str:
+    """Returns the active web player URL (hosted on Render if available, or fallback)."""
+    if RENDER_EXTERNAL_URL:
+        return f"{RENDER_EXTERNAL_URL}/player"
+    return FALLBACK_WEB_PLAYER
+
+
+def generate_m3u_playlist(channel_idx: int = None) -> bytes:
+    """Generates an M3U IPTV playlist formatted for VLC and external IPTV apps."""
+    lines = ["#EXTM3U\n"]
+    if channel_idx is not None:
+        name, url = CHANNEL_LIST[channel_idx]
+        lines.append(f'#EXTINF:-1 tvg-logo="{LOGO_URL}" group-title="beIN SPORTS",{name}\n{url}\n')
+    else:
+        for name, url in CHANNEL_LIST:
+            lines.append(f'#EXTINF:-1 tvg-logo="{LOGO_URL}" group-title="beIN SPORTS",{name}\n{url}\n')
+    return "".join(lines).encode("utf-8")
+
+
 # ---------------------------------------------------------------------------
 # 3. KEYBOARD GENERATORS
 # ---------------------------------------------------------------------------
@@ -168,6 +181,15 @@ def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
         )
 
     keyboard.append(nav_row)
+
+    # All channels M3U download button
+    keyboard.append([
+        InlineKeyboardButton(
+            text="📥 تحميل ملف كل القنوات (M3U لـ VLC)",
+            callback_data="m3u:all",
+        )
+    ])
+
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -176,13 +198,23 @@ def build_channel_player_markup(
     return_page: int,
     include_intent_button: bool = True,
 ) -> InlineKeyboardMarkup:
-    """Builds playback controls for the selected channel."""
-    _, stream_url = CHANNEL_LIST[channel_idx]
+    """
+    Builds playback options for the selected channel:
+    1. Web Player with logo mask and #Alistreamlivebot watermark.
+    2. External Player launchers (VLC / MX Player).
+    3. One-tap Copy Stream Link.
+    4. One-tap Download Channel M3U File for direct VLC launch.
+    5. Back to menu preserving page.
+    """
+    channel_name, stream_url = CHANNEL_LIST[channel_idx]
 
     encoded_stream = urllib.parse.quote(stream_url, safe="")
-    encoded_wm = urllib.parse.quote(WATERMARK, safe="")
-    web_player_url = f"{WEB_APP_PLAYER_URL}?url={encoded_stream}&wm={encoded_wm}"
-    vlc_intent_url = f"intent:{stream_url}#Intent;package=org.videolan.vlc;type=video/*;end"
+    encoded_title = urllib.parse.quote(channel_name, safe="")
+    base_player = get_web_player_base_url()
+    web_player_url = f"{base_player}?url={encoded_stream}&title={encoded_title}"
+
+    # VLC Android Intent URL
+    vlc_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
 
     keyboard: List[List[InlineKeyboardButton]] = []
 
@@ -194,19 +226,27 @@ def build_channel_player_markup(
         )
     ])
 
-    # 2. VLC Intent Android Link button
+    # 2. VLC Intent Android Link button (Safe inline URL)
     if include_intent_button:
         try:
             keyboard.append([
                 InlineKeyboardButton(
-                    text="🚀 تشغيل عبر VLC Player (Android)",
+                    text="🎬 تشغيل فوري في VLC (أندرويد)",
                     url=vlc_intent_url,
                 )
             ])
         except Exception:
             pass
 
-    # 3. Direct Copy Text Button (Telegram native one-tap clipboard copy)
+    # 3. Direct M3U file button (Opens in VLC/MX on phone with 1 tap!)
+    keyboard.append([
+        InlineKeyboardButton(
+            text="📥 فتح القناة عبر ملف M3U (VLC / MX)",
+            callback_data=f"m3u:{channel_idx}",
+        )
+    ])
+
+    # 4. Direct Copy Text Button (Telegram native clipboard copy)
     try:
         keyboard.append([
             InlineKeyboardButton(
@@ -222,7 +262,7 @@ def build_channel_player_markup(
             )
         ])
 
-    # 4. Back to Channels Menu Button
+    # 5. Back to Channels Menu Button
     keyboard.append([
         InlineKeyboardButton(
             text="🔙 العودة لقائمة القنوات",
@@ -249,22 +289,26 @@ def get_welcome_text() -> str:
 
 def get_channel_detail_text(channel_idx: int) -> str:
     channel_name, stream_url = CHANNEL_LIST[channel_idx]
-    vlc_intent_url = f"intent:{stream_url}#Intent;package=org.videolan.vlc;type=video/*;end"
+    vlc_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
+    mx_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=com.mxtech.videoplayer.ad;end"
+
     safe_name = html.escape(channel_name)
     safe_stream = html.escape(stream_url)
-    safe_intent = html.escape(vlc_intent_url)
+    safe_vlc = html.escape(vlc_intent_url)
+    safe_mx = html.escape(mx_intent_url)
 
     return (
         f"📺 <b>القناة:</b> <code>{safe_name}</code>\n"
-        f"🟢 <b>الحالة:</b> بث مباشر مستمر (LIVE 24/7)\n"
+        f"🟢 <b>الحالة:</b> بث حي ومباشر (LIVE 24/7)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>رابط البث المباشر (Direct Stream):</b>\n"
+        f"🎬 <b>طرق التشغيل الموصى بها لأعلى جودة:</b>\n\n"
+        f"1️⃣ <b>تطبيق VLC Player (أندرويد):</b>\n"
+        f"<code>{safe_vlc}</code>\n\n"
+        f"2️⃣ <b>تطبيق MX Player:</b>\n"
+        f"<code>{safe_mx}</code>\n\n"
+        f"3️⃣ <b>رابط البث المباشر (نسخ يدوي):</b>\n"
         f"<code>{safe_stream}</code>\n\n"
-        f"📱 <b>رابط تشغيل VLC المباشر لأندرويد (Intent):</b>\n"
-        f"<code>{safe_intent}</code>\n\n"
-        f"💡 <b>طريقة التشغيل:</b>\n"
-        f"• اضغط على <b>Web Player</b> للمشاهدة الفورية داخل تيليجرام.\n"
-        f"• اضغط على رابط <b>VLC Intent</b> أو انسخ الرابط والصقه داخل VLC.\n"
+        f"💡 <i>اضغط على زر <b>'فتح القناة عبر ملف M3U'</b> أدناه لفتح البث فوراً داخل VLC أو MX Player على هاتفك بنقرة واحدة!</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <i>{WATERMARK}</i>"
     )
@@ -277,7 +321,6 @@ dp = Dispatcher()
 
 
 async def send_welcome(message: Message) -> None:
-    """Sends the welcome menu instantly without any external delay."""
     text = get_welcome_text()
     markup = build_channels_page_markup(page=0)
     await message.answer(
@@ -289,19 +332,31 @@ async def send_welcome(message: Message) -> None:
 
 @dp.message(CommandStart())
 async def cmd_start_handler(message: Message) -> None:
-    """Triggered on /start"""
     await send_welcome(message)
 
 
 @dp.message(Command("channels"))
 async def cmd_channels_handler(message: Message) -> None:
-    """Triggered on /channels"""
     await send_welcome(message)
 
 
-@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة"]))
+@dp.message(Command("m3u"))
+async def cmd_m3u_handler(message: Message) -> None:
+    """Sends full channels M3U playlist file."""
+    m3u_bytes = generate_m3u_playlist()
+    file = BufferedInputFile(m3u_bytes, filename="aliSTREAM_Live_beIN.m3u")
+    await message.answer_document(
+        document=file,
+        caption=(
+            f"⚽ <b>ملف قنوات beIN SPORTS كامل (50 قناة)</b>\n"
+            f"📱 افتح هذا الملف بتطبيق <b>VLC</b> أو <b>MX Player</b> لتشغيل جميع القنوات فوراً وبدون تقطيع!\n"
+            f"🏷️ <i>{WATERMARK}</i>"
+        ),
+    )
+
+
+@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "m3u"]))
 async def text_start_handler(message: Message) -> None:
-    """Guarantees response even if user sends text without leading slash!"""
     await send_welcome(message)
 
 
@@ -370,6 +425,31 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ حدث خطأ أثناء فتح القناة")
 
 
+@dp.callback_query(F.data.startswith("m3u:"))
+async def m3u_callback_handler(callback: CallbackQuery) -> None:
+    """Generates and sends M3U playlist file for instant external player playback."""
+    try:
+        param = callback.data.split(":")[1]
+        if param == "all":
+            m3u_data = generate_m3u_playlist()
+            file_name = "aliSTREAM_All_Channels.m3u"
+            caption = f"⚽ <b>قائمة جميع القنوات (50 قناة)</b>\n🏷️ <i>{WATERMARK}</i>"
+        else:
+            idx = int(param)
+            ch_name, _ = CHANNEL_LIST[idx]
+            m3u_data = generate_m3u_playlist(idx)
+            clean_name = "".join(c for c in ch_name if c.isalnum() or c in (" ", "_", "-")).strip()
+            file_name = f"{clean_name}.m3u"
+            caption = f"📺 <b>ملف تشغيل قناة {ch_name}</b>\nاضغط لفتحه في VLC أو MX Player!\n🏷️ <i>{WATERMARK}</i>"
+
+        file = BufferedInputFile(m3u_data, filename=file_name)
+        await callback.message.answer_document(document=file, caption=caption)
+        await callback.answer("✅ تم إرسال ملف التشغيل!")
+    except Exception as exc:
+        logging.error("Error generating M3U: %s", exc)
+        await callback.answer("⚠️ تعذر إنشاء الملف")
+
+
 @dp.callback_query(F.data.startswith("copy:"))
 async def copy_callback_handler(callback: CallbackQuery) -> None:
     try:
@@ -390,21 +470,40 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. RENDER.COM HTTP HEALTH CHECK SERVER
+# 6. EMBEDDED HTTP WEB PLAYER SERVER (FOR RENDER & EXTERNAL BROWSERS)
 # ---------------------------------------------------------------------------
 async def render_health_handler(request: web.Request) -> web.Response:
-    """Returns 200 OK for Render / UptimeRobot / Koyeb health checks."""
     return web.Response(
         text="aliSTREAM Telegram Live TV Bot is LIVE and running! 🟢",
         content_type="text/plain; charset=utf-8",
     )
 
 
+async def web_player_handler(request: web.Request) -> web.Response:
+    """Serves the rich HTML5 Web Player with logo mask and #Alistreamlivebot watermark."""
+    if WEB_PLAYER_FILE.exists():
+        html_content = WEB_PLAYER_FILE.read_text(encoding="utf-8")
+        return web.Response(text=html_content, content_type="text/html; charset=utf-8")
+    return web.Response(text="Web Player not found", status=404)
+
+
+async def m3u_playlist_http_handler(request: web.Request) -> web.Response:
+    """Serves raw M3U playlist file over HTTP."""
+    data = generate_m3u_playlist()
+    return web.Response(
+        body=data,
+        content_type="application/x-mpegurl",
+        headers={"Content-Disposition": 'attachment; filename="aliSTREAM.m3u"'},
+    )
+
+
 async def start_http_server(port: int) -> web.AppRunner:
-    """Starts internal web server so Render marks the deployment as LIVE."""
     app = web.Application()
     app.router.add_get("/", render_health_handler)
     app.router.add_get("/health", render_health_handler)
+    app.router.add_get("/player", web_player_handler)
+    app.router.add_get("/playlist.m3u", m3u_playlist_http_handler)
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -428,12 +527,11 @@ async def main() -> None:
     print(f"📡 عدد القنوات المحملة: {TOTAL_CHANNELS} قناة عبر {TOTAL_PAGES} صفحات")
     print("=" * 55 + "\n")
 
-    # Start HTTP server for Render.com or cloud platforms (uses $PORT if present, else 8080)
     web_port = int(os.getenv("PORT", "8080"))
     http_runner = None
     try:
         http_runner = await start_http_server(web_port)
-        logger.info("✅ Render Web Health Server started on port %d (Live 🟢)", web_port)
+        logger.info("✅ Web Server & Player started on port %d (Live 🟢)", web_port)
     except Exception as exc:
         logger.warning("Could not start HTTP server on port %d: %s", web_port, exc)
 
@@ -442,17 +540,13 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    # 1. Verify Bot Token against Telegram API
     try:
         bot_info = await bot.get_me()
         print(f"✅ تم الاتصال بنجاح بخوادم تيليجرام!")
         print(f"🤖 اسم البوت: @{bot_info.username} (ID: {bot_info.id})")
-        print("🟢 البوت يعمل الآن وبانتظار أمر /start من المستخدمين...\n")
+        print("🟢 البوت يعمل الآن وبانتظار أوامر المستخدمين...\n")
     except TelegramUnauthorizedError:
-        print("\n" + "!" * 60)
-        print("❌ خطأ فادح: توكن البوت غير صالح أو تم إلغاؤه (401 Unauthorized)!")
-        print(f"🔑 التوكن المستخدم حالياً: {BOT_TOKEN}")
-        print("!" * 60 + "\n")
+        print("\n❌ خطأ: التوكن غير مصرح به (401 Unauthorized)!")
         if http_runner:
             await http_runner.cleanup()
         await bot.session.close()
@@ -464,7 +558,6 @@ async def main() -> None:
         await bot.session.close()
         return
 
-    # 2. Clear webhook if any, but KEEP pending updates so clicks aren't lost
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
