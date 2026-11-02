@@ -1,863 +1,477 @@
 """
-Telegram Football Betting & Prediction Bot
-مطور بتقنيات: Python, python-telegram-bot, API-Football (Real Data), Adsgram (55679), Supabase, Render Hosting
-Bot Username: @matchpredictor_dz_bot
+=============================================================================
+aliSTREAM Live TV Bot - Production Ready Telegram Streaming Bot
+Framework: aiogram v3 (Modern Asynchronous Python Telegram Bot Framework)
+Environment: Optimized for Linux / Android Termux / VPS / Windows
+Watermark: #Alistreamlive.bot
+=============================================================================
 """
 
+import asyncio
+import html
+import logging
 import os
 import sys
-
-# معالجة ترميز النصوص على نظام Windows لدعم اللغة العربية والإيموجي دون أخطاء
-if sys.platform.startswith("win"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-        sys.stderr.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
-
-import json
-import logging
-import threading
-import asyncio
 import urllib.parse
-from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-from dotenv import load_dotenv
+from typing import List, Tuple
 
-# استدعاء مكتبة التليجرام
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.constants import ParseMode
-from telegram.request import HTTPXRequest
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+from aiogram import Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
+from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    CallbackQuery,
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    WebAppInfo,
 )
 
-# استدعاء Supabase
-try:
-    from supabase import create_client, Client
-except ImportError:
-    Client = None
-    create_client = None
+# ---------------------------------------------------------------------------
+# 1. CONFIGURATION & CREDENTIALS
+# ---------------------------------------------------------------------------
+# You can set BOT_TOKEN directly here or via Termux environment variable:
+# export BOT_TOKEN="your_new_token"
+DEFAULT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
+BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
 
-# استدعاء Gemini (دعم Google GenAI الحديث)
-GEMINI_CLIENT_TYPE = None
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_CLIENT_TYPE = "new"
-except ImportError:
-    GEMINI_CLIENT_TYPE = None
-
-# تحميل المتغيرات البيئية من ملف .env
-load_dotenv()
-
-# إعداد التسجيل (Logging)
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+SUPABASE_URL = "https://ddywqmupodubrwlaflem.supabase.co"
+SUPABASE_ANON_KEY = "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h"
+WEB_APP_PLAYER_URL = (
+    "https://ddywqmupodubrwlaflem.supabase.co/storage/v1/object/public/web-player/index.html"
 )
-logger = logging.getLogger("FootballBot")
+LOGO_URL = "https://a.top4top.io/p_39583wl340.png"
+WATERMARK = "#Alistreamlive.bot"
 
-# =========================================================================
-# الإعدادات والمفاتيح الأساسية
-# =========================================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9154832991:AAFn34ZAsOjkEhrRbnsKxfERbRLoC3fWdNw")
-FOOTBALL_API_KEY = os.getenv("FOOTBALL_API_KEY", "05f1e429a91687bfe744f0910f408a59")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/alifootbaal95")
+ITEMS_PER_PAGE = 8
 
-# معرّف إعلانات Adsgram
-ADSGRAM_BLOCK_ID = os.getenv("ADSGRAM_BLOCK_ID", "55679")
-
-# رابط الاستضافة أو WebApp
-BASE_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("WEBAPP_URL", "")
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-
-# مراجع عامة لتنسيق المهام بين Thread الخادم وتطبيق التليجرام
-telegram_app = None
-main_async_loop = None
-
-# تهيئة عميل Supabase
-supabase_client: Client = None
-if SUPABASE_URL and SUPABASE_KEY and create_client:
-    try:
-        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logger.info("تم الاتصال بـ Supabase بنجاح.")
-    except Exception as e:
-        logger.error(f"خطأ في الاتصال بـ Supabase: {e}")
-
-# تهيئة عميل Gemini
-gemini_client = None
-if GEMINI_API_KEY and GEMINI_CLIENT_TYPE == "new":
-    try:
-        gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("تم تفعيل google-genai بنجاح.")
-    except Exception as e:
-        logger.error(f"خطأ أثناء تهيئة google-genai: {e}")
-
-# =========================================================================
-# صفحة الويب المصغرة لإعلانات Adsgram وخادم Render
-# =========================================================================
-
-HTML_ADSGRAM_PAGE = """<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>فتح التحليل - Adsgram 55679</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://sad.adsgram.ai/js/sad.min.js"></script>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            background: radial-gradient(circle at top, #1e293b, #0f172a);
-            color: #f8fafc;
-            margin: 0;
-            padding: 24px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 95vh;
-            text-align: center;
-        }
-        .card {
-            background: rgba(30, 41, 59, 0.85);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            backdrop-filter: blur(12px);
-            border-radius: 24px;
-            padding: 28px 20px;
-            width: 100%;
-            max-width: 380px;
-            box-shadow: 0 15px 35px rgba(0,0,0,0.4);
-        }
-        .badge {
-            display: inline-block;
-            background: #22c55e;
-            color: #022c22;
-            font-weight: 800;
-            padding: 6px 16px;
-            border-radius: 50px;
-            font-size: 13px;
-            margin-bottom: 14px;
-            text-transform: uppercase;
-        }
-        .match-title {
-            font-size: 21px;
-            font-weight: 800;
-            margin: 10px 0 14px 0;
-            color: #ffffff;
-            line-height: 1.4;
-        }
-        .desc {
-            font-size: 14px;
-            color: #94a3b8;
-            line-height: 1.6;
-            margin-bottom: 24px;
-        }
-        .btn-watch {
-            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-            color: #ffffff;
-            border: none;
-            padding: 16px 24px;
-            font-size: 17px;
-            font-weight: 700;
-            border-radius: 16px;
-            cursor: pointer;
-            width: 100%;
-            transition: all 0.2s ease;
-            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4);
-        }
-        .btn-watch:active {
-            transform: scale(0.97);
-        }
-        .spinner {
-            display: inline-block;
-            width: 28px;
-            height: 28px;
-            border: 3px solid rgba(255,255,255,0.25);
-            border-radius: 50%;
-            border-top-color: #22c55e;
-            animation: spin 0.9s linear infinite;
-            margin-bottom: 12px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .success-box {
-            color: #4ade80;
-            font-size: 16px;
-            font-weight: 700;
-            line-height: 1.5;
-        }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="badge" id="leagueName">تحليل ذكي VIP</div>
-        <div class="match-title" id="matchTitle">⚽ تحميل المباراة...</div>
-        <p class="desc">
-            شاهد إعلاناً قصيراً لفتح التحليل الرياضي الشامل، نسب الفوز الدقيقة، وتوصيات الرهانات الذكية لهذه المباراة فوراً 🎁
-        </p>
-
-        <button class="btn-watch" id="watchBtn" onclick="triggerAd()">
-            🎬 مشاهدة الإعلان لفتح التحليل
-        </button>
-
-        <div id="loadingBox" style="display: none; margin-top: 20px;">
-            <div class="spinner"></div>
-            <div id="statusText">جاري تشغيل إعلان Adsgram (55679)...</div>
-        </div>
-    </div>
-
-    <script>
-        const tg = window.Telegram?.WebApp;
-        if (tg) {
-            tg.ready();
-            tg.expand();
-        }
-
-        const urlParams = new URLSearchParams(window.location.search);
-        const fixtureId = urlParams.get('fixture_id') || '0';
-        const home = urlParams.get('home') || 'الفريق الأول';
-        const away = urlParams.get('away') || 'الفريق الثاني';
-        const league = urlParams.get('league') || 'الدوري';
-        
-        let userId = urlParams.get('user_id');
-        if (!userId && tg?.initDataUnsafe?.user?.id) {
-            userId = tg.initDataUnsafe.user.id;
-        }
-        let username = tg?.initDataUnsafe?.user?.username || tg?.initDataUnsafe?.user?.first_name || '';
-
-        document.getElementById('matchTitle').innerText = `${home} 🆚 ${away}`;
-        document.getElementById('leagueName').innerText = league;
-
-        // Block ID: 55679
-        const ADSGRAM_BLOCK_ID = "55679";
-        let AdController = null;
-        try {
-            if (window.Adsgram) {
-                AdController = window.Adsgram.init({ blockId: ADSGRAM_BLOCK_ID });
-            }
-        } catch(e) {
-            console.error("Adsgram init error:", e);
-        }
-
-        function triggerAd() {
-            const watchBtn = document.getElementById('watchBtn');
-            const loadingBox = document.getElementById('loadingBox');
-            const statusText = document.getElementById('statusText');
-
-            watchBtn.style.display = 'none';
-            loadingBox.style.display = 'block';
-            statusText.innerText = "جاري عرض الإعلان...";
-
-            if (AdController) {
-                AdController.show().then((result) => {
-                    statusText.innerText = "✅ تم تأكيد مشاهدة الإعلان بنجاح!";
-                    onRewardSuccess();
-                }).catch((result) => {
-                    console.log("Ad result:", result);
-                    statusText.innerText = "جاري فتح التحليل...";
-                    onRewardSuccess();
-                });
-            } else {
-                statusText.innerText = "جاري فتح التحليل مباشرة...";
-                onRewardSuccess();
-            }
-        }
-
-        function onRewardSuccess() {
-            fetch('/api/ad-reward', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    fixture_id: fixtureId,
-                    home: home,
-                    away: away,
-                    league: league,
-                    user_id: userId,
-                    username: username
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                const loadingBox = document.getElementById('loadingBox');
-                loadingBox.innerHTML = '<div class="success-box">🎉 تم إرسال التحليل وتوقعات الرهان بنجاح إلى محادثتك على تليجرام!</div>';
-                setTimeout(() => {
-                    if (tg) tg.close();
-                }, 2000);
-            })
-            .catch(err => {
-                setTimeout(() => {
-                    if (tg) tg.close();
-                }, 1500);
-            });
-        }
-
-        setTimeout(() => {
-            triggerAd();
-        }, 500);
-    </script>
-</body>
-</html>
-"""
-
-class RenderAndAdsServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        if path in ["/", "/health", "/status"]:
-            self.send_response(200)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.end_headers()
-            html = """
-            <html>
-                <body style="font-family: Arial; text-align: center; padding: 50px; background: #0f172a; color: white;">
-                    <h1 style="color: #22c55e;">Football Betting Bot & Adsgram (55679) Active</h1>
-                    <p>Status: Healthy & Online</p>
-                </body>
-            </html>
-            """
-            self.wfile.write(html.encode("utf-8"))
-            return
-
-        if path == "/ad":
-            self.send_response(200)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(HTML_ADSGRAM_PAGE.encode("utf-8"))
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def do_POST(self):
-        if self.path == "/api/ad-reward":
-            try:
-                length = int(self.headers.get("content-length", 0))
-                body = self.rfile.read(length)
-                data = json.loads(body.decode("utf-8"))
-
-                user_id = data.get("user_id")
-                fixture_id = int(data.get("fixture_id", 0))
-                home = data.get("home", "")
-                away = data.get("away", "")
-                league = data.get("league", "")
-                username = data.get("username", "")
-
-                logger.info(f"Adsgram Reward confirmed for user {user_id}: {home} vs {away}")
-
-                if user_id and telegram_app and main_async_loop:
-                    asyncio.run_coroutine_threadsafe(
-                        send_prediction_to_user(
-                            user_id=int(user_id),
-                            username=username,
-                            fixture_id=fixture_id,
-                            home=home,
-                            away=away,
-                            league=league,
-                            watched_ad=True
-                        ),
-                        main_async_loop
-                    )
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"status": "ok", "reward_granted": true}')
-            except Exception as e:
-                logger.error(f"Error handling ad reward: {e}")
-                self.send_response(500)
-                self.end_headers()
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-def start_render_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), RenderAndAdsServer)
-    logger.info(f"Render web server started on port {port}.")
-    server.serve_forever()
-
-# =========================================================================
-# جلب بيانات المباريات الحقيقية من API-Sports
-# =========================================================================
-
-MAJOR_LEAGUES = {
-    39: {"name_ar": "الدوري الإنجليزي الممتاز", "flag": "🏴󠁧󠁢󠁥󠁮󠁧󠁿"},
-    140: {"name_ar": "الدوري الإسباني (La Liga)", "flag": "🇪🇸"},
-    135: {"name_ar": "الدوري الإيطالي (Serie A)", "flag": "🇮🇹"},
-    78: {"name_ar": "الدوري الألماني (Bundesliga)", "flag": "🇩🇪"},
-    61: {"name_ar": "الدوري الفرنسي (Ligue 1)", "flag": "🇫🇷"},
-    2: {"name_ar": "دوري أبطال أوروبا (UCL)", "flag": "🏆"},
-    3: {"name_ar": "الدوري الأوروبي (UEL)", "flag": "🌍"},
+# ---------------------------------------------------------------------------
+# 2. CHANNELS DATA (SECURE BACKGROUND MAPPING)
+# ---------------------------------------------------------------------------
+CHANNELS = {
+    "FR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts",
+    "FR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts",
+    "FR | BEIN SPORTS 1 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/92.ts",
+    "FR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14153.ts",
+    "FR | BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14169.ts",
+    "FR | BEIN SPORTS 2 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/93.ts",
+    "FR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14152.ts",
+    "FR | BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14163.ts",
+    "FR | BEIN SPORTS 3 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/94.ts",
+    "FR | BEIN SPORTS MAX 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151958.ts",
+    "FR | BEIN SPORTS MAX 4 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/95.ts",
+    "FR | BEIN SPORTS MAX 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151961.ts",
+    "FR | BEIN SPORTS MAX 5 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/39882.ts",
+    "FR | BEIN SPORTS MAX 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151964.ts",
+    "FR | BEIN SPORTS MAX 6 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1089.ts",
+    "FR | BEIN SPORTS MAX 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151967.ts",
+    "FR | BEIN SPORTS MAX 7 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1113.ts",
+    "FR | BEIN SPORTS MAX 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151970.ts",
+    "FR | BEIN SPORTS MAX 8 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1468.ts",
+    "FR | BEIN SPORTS MAX 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151973.ts",
+    "FR | BEIN SPORTS MAX 9 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1469.ts",
+    "FR | BEIN SPORTS MAX 10 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151976.ts",
+    "FR | BEIN SPORTS MAX 10 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1470.ts",
+    "FR | BEIN SPORTS 1 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47499.ts",
+    "FR | BEIN SPORTS 2 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47500.ts",
+    "C+ RÉU| BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359681.ts",
+    "C+ RÉU| BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359680.ts",
+    "C+ RÉU| BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359679.ts",
+    "C+ RÉU| BEIN SPORTS MAX 4": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359678.ts",
+    "C+ RÉU| BEIN SPORTS MAX 5": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359677.ts",
+    "AR | BEIN SPORTS ARABIC": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24983.ts",
+    "AR | BEIN SPORTS NEWS FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24979.ts",
+    "AR | BEIN SPORTS NEWS HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/78372.ts",
+    "AR | BEIN SPORTS GLOBAL FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24980.ts",
+    "AR | BEIN SPORTS GLOBAL HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/409586.ts",
+    "AR | BEIN SPORTS 4K": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/164973.ts",
+    "AR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13608.ts",
+    "AR | BEIN SPORTS 1 FHD BKP": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/368730.ts",
+    "AR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13682.ts",
+    "AR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13607.ts",
+    "AR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts",
+    "AR | BEIN SPORTS 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13605.ts",
+    "AR | BEIN SPORTS 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13604.ts",
+    "AR | BEIN SPORTS 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13603.ts",
+    "AR | BEIN SPORTS 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13602.ts",
+    "AR | BEIN SPORTS 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13611.ts",
+    "AR | BEIN SPORTS 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13610.ts",
+    "AR | BEIN SPORTS NBA FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/21197.ts",
+    "TR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/79457.ts",
+    "US | BEIN SPORTS US": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/328821.ts",
 }
 
-def get_real_today_matches():
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    url = f"https://v3.football.api-sports.io/fixtures?date={today_str}"
-    headers = {"x-apisports-key": FOOTBALL_API_KEY}
-    
-    matches_list = []
-    try:
-        res = requests.get(url, headers=headers, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            fixtures = data.get("response", [])
+CHANNEL_LIST: List[Tuple[str, str]] = list(CHANNELS.items())
+TOTAL_CHANNELS = len(CHANNEL_LIST)
+TOTAL_PAGES = (TOTAL_CHANNELS + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
 
-            for item in fixtures:
-                lid = item.get("league", {}).get("id")
-                if lid in MAJOR_LEAGUES:
-                    f_id = item["fixture"]["id"]
-                    home = item["teams"]["home"]["name"]
-                    away = item["teams"]["away"]["name"]
-                    time_utc = item["fixture"]["date"][11:16]
-                    status = item["fixture"]["status"]["short"]
-                    league_info = MAJOR_LEAGUES[lid]
-                    
-                    matches_list.append({
-                        "fixture_id": f_id,
-                        "home": home,
-                        "away": away,
-                        "league_ar": league_info["name_ar"],
-                        "flag": league_info["flag"],
-                        "time": time_utc,
-                        "status": status,
-                        "is_major": True
-                    })
 
-            if not matches_list and fixtures:
-                for item in fixtures[:15]:
-                    f_id = item["fixture"]["id"]
-                    home = item["teams"]["home"]["name"]
-                    away = item["teams"]["away"]["name"]
-                    league_name = item.get("league", {}).get("name", "International")
-                    time_utc = item["fixture"]["date"][11:16]
-                    status = item["fixture"]["status"]["short"]
-                    matches_list.append({
-                        "fixture_id": f_id,
-                        "home": home,
-                        "away": away,
-                        "league_ar": league_name,
-                        "flag": "⚽",
-                        "time": time_utc,
-                        "status": status,
-                        "is_major": False
-                    })
+# ---------------------------------------------------------------------------
+# 3. KEYBOARD GENERATORS
+# ---------------------------------------------------------------------------
+def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
+    """Builds channels keyboard showing ONLY channel names."""
+    page = max(0, min(page, TOTAL_PAGES - 1))
+    start_idx = page * ITEMS_PER_PAGE
+    end_idx = min(start_idx + ITEMS_PER_PAGE, TOTAL_CHANNELS)
 
-    except Exception as e:
-        logger.error(f"Error fetching matches from API-Sports: {e}")
+    keyboard: List[List[InlineKeyboardButton]] = []
 
-    return matches_list, today_str
-
-def get_real_fixture_prediction(fixture_id: int):
-    url = f"https://v3.football.api-sports.io/predictions?fixture={fixture_id}"
-    headers = {"x-apisports-key": FOOTBALL_API_KEY}
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get("response"):
-                return data["response"][0]
-    except Exception as e:
-        logger.error(f"Error fetching prediction for {fixture_id}: {e}")
-    return None
-
-# =========================================================================
-# التحليل وتوليد تقرير الرهانات
-# =========================================================================
-def generate_ai_analysis_report(home: str, away: str, league: str, pred_data: dict = None) -> str:
-    percent_home = "40%"
-    percent_draw = "30%"
-    percent_away = "30%"
-    advice = f"{home} to win or draw"
-    under_over = "Over/Under 2.5"
-
-    if pred_data:
-        pred_info = pred_data.get("predictions", {})
-        percent = pred_info.get("percent", {})
-        percent_home = percent.get("home", "45%")
-        percent_draw = percent.get("draw", "25%")
-        percent_away = percent.get("away", "30%")
-        advice = pred_info.get("advice", f"{home} to win or draw")
-        under_over = pred_info.get("under_over", "-2.5")
-
-    if gemini_client:
-        prompt = f"""
-أنت محلل رياضي وخبير رهانات كرة القدم. اكتب تحليلاً احترافياً موجزاً باللغة العربية لمباراة:
-{home} ضد {away} ({league})
-
-بيانات وإحصائيات الـ API الحقيقية المؤكدة:
-- نسبة فوز {home}: {percent_home}
-- نسبة التعادل: {percent_draw}
-- نسبة فوز {away}: {percent_away}
-- نصيحة الـ API والخوارزميات: {advice}
-- معدل الأهداف: {under_over}
-
-اكتب التقرير بالتنسيق التالي بدقة:
-1. 📊 نسب الفوز المباشرة (1X2)
-2. ⚽ النتيجة الدقيقة المتوقعة رقمياً
-3. 🎯 ترشيحات الرهانات الذكية الأكثر أماناً وقيمة (Over/Under، تسجيل الفريقين BTTS، Double Chance)
-4. 💡 مفتاح الفوز في سطرين
-"""
-        try:
-            resp = gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            if resp.text:
-                return resp.text
-        except Exception as e:
-            logger.warning(f"Gemini fallback to algorithm: {e}")
-
-    return f"""
-📊 <b>تحليل وتوقعات المباراة الحقيقية:</b>
-⚔️ <b>{home} 🆚 {away}</b>
-🏆 <b>البطولة:</b> {league}
-
-──────────────────
-📈 <b>نسب الفوز التقديرية الحقيقية (1X2):</b>
-• 🏠 فوز {home}: <b>{percent_home}</b>
-• 🤝 التعادل: <b>{percent_draw}</b>
-• ✈️ فوز {away}: <b>{percent_away}</b>
-
-⚽ <b>النتيجة الدقيقة المتوقعة:</b>
-🎯 الأقرب رقمياً وفق الأداء ومعدل التهديف: <b>{home} (1 - 1) أو (2 - 1) {away}</b>
-
-🎯 <b>أفضل مقترحات الرهانات الذكية (Smart Value Bets):</b>
-• 💡 <b>توصية الخوارزمية:</b> <code>{advice}</code>
-• 🥅 <b>سوق الأهداف (Over/Under):</b> الرهان المفضل هو <b>{under_over} Goals</b>
-• ⚡ <b>تسجيل كلا الفريقين (BTTS):</b> فرصة متوازنة بناءً على قوة الهجوم والدفاع
-• 🛡️ <b>رهان الأمان (Double Chance):</b> <b>{home} أو تعادل (1X)</b>
-
-⚠️ <i>التحليلات مستخرجة مباشرة من قاعدة بيانات الإحصائيات الرياضية الرسمية لمساعدة قراراتك بوعي ومسؤولية.</i>
-"""
-
-# =========================================================================
-# تخزين البيانات في Supabase
-# =========================================================================
-async def save_to_supabase(user_id: int, username: str, user_message: str, bot_reply: str):
-    if not supabase_client:
-        return
-
-    def _insert():
-        try:
-            record = {
-                "user_id": str(user_id),
-                "username": username or "Unknown",
-                "user_message": user_message[:500] if user_message else "",
-                "bot_reply": bot_reply[:2500] if bot_reply else ""
-            }
-            supabase_client.table("predictions").insert(record).execute()
-            logger.info(f"Prediction saved to Supabase for {user_id}")
-        except Exception as ex:
-            logger.error(f"Supabase insert error: {ex}")
-
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _insert)
-
-# =========================================================================
-# إرسال التحليل للمستخدم
-# =========================================================================
-async def send_prediction_to_user(user_id: int, username: str, fixture_id: int, home: str, away: str, league: str, watched_ad: bool = True):
-    try:
-        loop = asyncio.get_running_loop()
-        pred_data = await loop.run_in_executor(None, get_real_fixture_prediction, fixture_id) if fixture_id else None
-
-        league_title = league
-        if pred_data and pred_data.get("league"):
-            league_title = pred_data["league"].get("name", league)
-
-        report = await loop.run_in_executor(
-            None,
-            generate_ai_analysis_report,
-            home,
-            away,
-            league_title,
-            pred_data
-        )
-
-        ad_status_tag = "🎁 <i>تم فتح هذا التحليل الحصري عبر إعلانات Adsgram</i>\n\n" if watched_ad else ""
-
-        final_msg = (
-            f"{ad_status_tag}{report}\n\n"
-            "──────────────────\n"
-            "💎 <b>هل ترغب بمضاعفة أرباحك وتلقي توصيات ورهانات Live يومية حصرية؟</b>\n"
-            "👉 اشترك الآن في قناتنا الرسمية على تليجرام:"
-        )
-
-        channel_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔥 انضم الآن للقناة الحصرية VIP 🔥", url=CHANNEL_URL)]
-        ])
-
-        if telegram_app:
-            await telegram_app.bot.send_message(
-                chat_id=user_id,
-                text=final_msg,
-                reply_markup=channel_markup,
-                parse_mode=ParseMode.HTML
-            )
-
-        await save_to_supabase(
-            user_id=user_id,
-            username=username,
-            user_message=f"Fixture {fixture_id}: {home} vs {away} (Ad: {watched_ad})",
-            bot_reply=final_msg
-        )
-    except Exception as e:
-        logger.error(f"Error sending prediction to {user_id}: {e}")
-
-# =========================================================================
-# أزرار المباريات وقوائم التحكم
-# =========================================================================
-
-def build_fixtures_keyboard(matches):
-    keyboard = []
-    
-    for m in matches[:15]:
-        btn_text = f"{m['flag']} {m['home']} 🆚 {m['away']} (⏰ {m['time']} UTC)"
-        cb_data = f"match_click:{m['fixture_id']}:{m['home'][:15]}:{m['away'][:15]}"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=cb_data)])
-
-    action_row = [
-        InlineKeyboardButton("🔄 تحديث جدول اليوم", callback_data="refresh_fixtures"),
-        InlineKeyboardButton("💎 القناة الرسمية والتوصيات VIP", url=CHANNEL_URL)
-    ]
-    keyboard.append(action_row)
-    return InlineKeyboardMarkup(keyboard)
-
-def build_ad_gate_keyboard(fixture_id, home, away, league, user_id):
-    buttons = []
-
-    base = BASE_URL.rstrip("/") if BASE_URL else ""
-    ad_url = f"{base}/ad?fixture_id={fixture_id}&home={urllib.parse.quote(home)}&away={urllib.parse.quote(away)}&league={urllib.parse.quote(league)}&user_id={user_id}"
-
-    if base:
-        buttons.append([
+    for idx in range(start_idx, end_idx):
+        channel_name, _ = CHANNEL_LIST[idx]
+        keyboard.append([
             InlineKeyboardButton(
-                "🎬 مشاهدة إعلان لفتح التحليل فوراً (Adsgram 55679) 🎁",
-                web_app=WebAppInfo(url=ad_url)
-            )
-        ])
-    else:
-        buttons.append([
-            InlineKeyboardButton(
-                "🎬 فتح التحليل بمشاهدة الإعلان (Adsgram 55679)",
-                callback_data=f"unlock_ad:{fixture_id}:{home[:15]}:{away[:15]}"
+                text=f"📺 {channel_name}",
+                callback_data=f"ch:{idx}:{page}",
             )
         ])
 
-    buttons.append([
-        InlineKeyboardButton("⚡ فتح فوري (مباشر)", callback_data=f"direct_unlock:{fixture_id}:{home[:15]}:{away[:15]}"),
-        InlineKeyboardButton("🔙 رجوع للمباريات", callback_data="refresh_fixtures")
+    nav_row: List[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="⬅️ السابق",
+                callback_data=f"page:{page - 1}",
+            )
+        )
+
+    nav_row.append(
+        InlineKeyboardButton(
+            text=f"📄 {page + 1}/{TOTAL_PAGES}",
+            callback_data="noop",
+        )
+    )
+
+    if page < TOTAL_PAGES - 1:
+        nav_row.append(
+            InlineKeyboardButton(
+                text="التالي ➡️",
+                callback_data=f"page:{page + 1}",
+            )
+        )
+
+    keyboard.append(nav_row)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def build_channel_player_markup(
+    channel_idx: int,
+    return_page: int,
+    include_intent_button: bool = True,
+) -> InlineKeyboardMarkup:
+    """Builds playback controls for the selected channel."""
+    _, stream_url = CHANNEL_LIST[channel_idx]
+
+    encoded_stream = urllib.parse.quote(stream_url, safe="")
+    encoded_wm = urllib.parse.quote(WATERMARK, safe="")
+    web_player_url = f"{WEB_APP_PLAYER_URL}?url={encoded_stream}&wm={encoded_wm}"
+    vlc_intent_url = f"intent:{stream_url}#Intent;package=org.videolan.vlc;type=video/*;end"
+
+    keyboard: List[List[InlineKeyboardButton]] = []
+
+    # 1. Telegram Web App Player button
+    keyboard.append([
+        InlineKeyboardButton(
+            text="▶️ تشغيل في المتصفح | Web Player",
+            web_app=WebAppInfo(url=web_player_url),
+        )
     ])
 
-    return InlineKeyboardMarkup(buttons)
-
-# =========================================================================
-# معالجات أوامر التليجرام
-# =========================================================================
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-
-    wait_msg = await update.message.reply_text("⏳ <i>جاري جلب جدول مباريات اليوم الرسمية...</i>", parse_mode=ParseMode.HTML)
-
-    loop = asyncio.get_running_loop()
-    matches, today_str = await loop.run_in_executor(None, get_real_today_matches)
-
-    try:
-        await wait_msg.delete()
-    except Exception:
-        pass
-
-    if matches:
-        welcome_text = (
-            f"👋 أهلاً بك <b>{user.first_name}</b> في <b>بوت توقعات وتحليلات كرة القدم والرهانات الذكية!</b> ⚽🤖\n\n"
-            f"📅 <b>جدول مباريات اليوم الحقيقية ({today_str}):</b>\n"
-            f"تم جلب <b>{len(matches)}</b> مباراة رسمية من جدول الدوريات الكبرى.\n\n"
-            f"👇 <b>اختر أي مباراة بالأسفل لعرض خيارات التحليل المتاحة:</b>"
-        )
-        markup = build_fixtures_keyboard(matches)
-        await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    else:
-        no_matches_text = (
-            f"👋 أهلاً بك <b>{user.first_name}</b>!\n\n"
-            f"📅 <b>تاريخ اليوم ({today_str}):</b>\n"
-            "لا توجد مباريات جارية اليوم في الدوريات الكبرى المحددة.\n\n"
-            "✍️ <b>يمكنك كتابة اسم أي مباراة أو فريق تريده في الشات</b> وسأقوم بتحليلها فوراً!"
-        )
-        refresh_btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 فحص التحديثات الآن", callback_data="refresh_fixtures")],
-            [InlineKeyboardButton("💎 القناة الرسمية والتوصيات VIP", url=CHANNEL_URL)]
-        ])
-        await update.message.reply_text(no_matches_text, reply_markup=refresh_btn, parse_mode=ParseMode.HTML)
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-    user = update.effective_user
-
-    if data == "refresh_fixtures":
-        loop = asyncio.get_running_loop()
-        matches, today_str = await loop.run_in_executor(None, get_real_today_matches)
-        if matches:
-            markup = build_fixtures_keyboard(matches)
-            await query.edit_message_reply_markup(reply_markup=markup)
-        else:
-            await query.message.reply_text(f"لا توجد مباريات جديدة مجدولة لتاريخ {today_str}.")
-        return
-
-    if data.startswith("match_click:"):
-        parts = data.split(":")
-        fixture_id = int(parts[1])
-        home = parts[2] if len(parts) > 2 else "Home"
-        away = parts[3] if len(parts) > 3 else "Away"
-
-        gate_text = (
-            f"⚽ <b>مباراة: {home} 🆚 {away}</b>\n\n"
-            "🔓 <b>لفتح التحليل الإحصائي الكامل، نسب الفوز الدقيقة وتوصيات الرهانات الذكية VIP:</b>\n"
-            "اضغط على الزر بالأسفل لمشاهدة إعلان سريع <b>(Adsgram 55679)</b> وسيتم إرسال التقرير الشامل فوراً إلى المحادثة 🎁"
-        )
-
-        markup = build_ad_gate_keyboard(fixture_id, home, away, "الدوري الرسمي", user.id)
-        await query.message.reply_text(gate_text, reply_markup=markup, parse_mode=ParseMode.HTML)
-        return
-
-    if data.startswith("unlock_ad:") or data.startswith("direct_unlock:"):
-        is_ad = data.startswith("unlock_ad:")
-        parts = data.split(":")
-        fixture_id = int(parts[1])
-        home = parts[2] if len(parts) > 2 else "Home"
-        away = parts[3] if len(parts) > 3 else "Away"
-
-        wait_msg = await query.message.reply_text(
-            f"⏳ <b>جاري تحضير التحليل الشامل لمباراة ({home} 🆚 {away})...</b>",
-            parse_mode=ParseMode.HTML
-        )
-
-        await send_prediction_to_user(
-            user_id=user.id,
-            username=user.username or user.first_name,
-            fixture_id=fixture_id,
-            home=home,
-            away=away,
-            league="الدوري الرسمي",
-            watched_ad=is_ad
-        )
-
+    # 2. VLC Intent Android Link button
+    if include_intent_button:
         try:
-            await wait_msg.delete()
+            keyboard.append([
+                InlineKeyboardButton(
+                    text="🚀 تشغيل عبر VLC Player (Android)",
+                    url=vlc_intent_url,
+                )
+            ])
         except Exception:
             pass
 
-async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
-    user = update.effective_user
-
-    if not user_text:
-        return
-
-    wait_msg = await update.message.reply_text(
-        f"⏳ <b>جاري البحث في قاعدة البيانات وتحليل مباراة: ({user_text})...</b>",
-        parse_mode=ParseMode.HTML
-    )
-
-    loop = asyncio.get_running_loop()
-    report = await loop.run_in_executor(
-        None,
-        generate_ai_analysis_report,
-        user_text,
-        "",
-        "تحليل خاص",
-        None
-    )
-
+    # 3. Direct Copy Text Button (Telegram native one-tap clipboard copy)
     try:
-        await wait_msg.delete()
+        keyboard.append([
+            InlineKeyboardButton(
+                text="📋 نسخ رابط البث المباشر",
+                copy_text=CopyTextButton(text=stream_url),
+            )
+        ])
     except Exception:
-        pass
+        keyboard.append([
+            InlineKeyboardButton(
+                text="📋 نسخ رابط البث المباشر",
+                callback_data=f"copy:{channel_idx}:{return_page}",
+            )
+        ])
 
-    channel_markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔥 انضم للقناة الحصرية VIP للحصول على التوصيات 🔥", url=CHANNEL_URL)]
+    # 4. Back to Channels Menu Button
+    keyboard.append([
+        InlineKeyboardButton(
+            text="🔙 العودة لقائمة القنوات",
+            callback_data=f"page:{return_page}",
+        )
     ])
 
-    final_msg = (
-        f"{report}\n\n"
-        "──────────────────\n"
-        "💎 <b>توصيات حصرية ورهانات يومية مباشرة!</b>\n"
-        "👉 انضم الآن لقناتنا الرسمية للاستفادة من كل جديد:"
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+# ---------------------------------------------------------------------------
+# 4. MESSAGE TEXT TEMPLATES
+# ---------------------------------------------------------------------------
+def get_welcome_text() -> str:
+    return (
+        f"👋 <b>مرحباً بك في بوت aliSTREAM للبث المباشر!</b>\n\n"
+        f"⚽ <b>باقة قنوات beIN SPORTS المشفرة بجودة عالية</b>\n"
+        f"📡 إجمالي القنوات المتاحة: <b>{TOTAL_CHANNELS}</b> قناة\n\n"
+        f"👇 <i>اختر القناة المطلوبة من الأزرار أدناه:</i>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ <i>{WATERMARK}</i>"
     )
 
-    await update.message.reply_text(
-        text=final_msg,
-        reply_markup=channel_markup,
-        parse_mode=ParseMode.HTML
+
+def get_channel_detail_text(channel_idx: int) -> str:
+    channel_name, stream_url = CHANNEL_LIST[channel_idx]
+    vlc_intent_url = f"intent:{stream_url}#Intent;package=org.videolan.vlc;type=video/*;end"
+    safe_name = html.escape(channel_name)
+    safe_stream = html.escape(stream_url)
+    safe_intent = html.escape(vlc_intent_url)
+
+    return (
+        f"📺 <b>القناة:</b> <code>{safe_name}</code>\n"
+        f"🟢 <b>الحالة:</b> بث مباشر مستمر (LIVE 24/7)\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔗 <b>رابط البث المباشر (Direct Stream):</b>\n"
+        f"<code>{safe_stream}</code>\n\n"
+        f"📱 <b>رابط تشغيل VLC المباشر لأندرويد (Intent):</b>\n"
+        f"<code>{safe_intent}</code>\n\n"
+        f"💡 <b>طريقة التشغيل:</b>\n"
+        f"• اضغط على <b>Web Player</b> للمشاهدة الفورية داخل تيليجرام.\n"
+        f"• اضغط على رابط <b>VLC Intent</b> أو انسخ الرابط والصقه داخل VLC.\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ <i>{WATERMARK}</i>"
     )
 
-    await save_to_supabase(
-        user_id=user.id,
-        username=user.username or user.first_name,
-        user_message=user_text,
-        bot_reply=final_msg
+
+# ---------------------------------------------------------------------------
+# 5. DISPATCHER & HANDLERS
+# ---------------------------------------------------------------------------
+dp = Dispatcher()
+
+
+async def send_welcome(message: Message) -> None:
+    """Helper function to send the welcome menu reliably and instantly."""
+    text = get_welcome_text()
+    markup = build_channels_page_markup(page=0)
+
+    # 1. Try sending with photo (with short timeout to prevent hanging)
+    sent = False
+    if LOGO_URL:
+        try:
+            await asyncio.wait_for(
+                message.answer_photo(
+                    photo=LOGO_URL,
+                    caption=text,
+                    reply_markup=markup,
+                ),
+                timeout=4.0,  # Never hang if photo host is slow
+            )
+            sent = True
+        except Exception:
+            sent = False
+
+    # 2. Instant guaranteed fallback to text if photo fails or times out
+    if not sent:
+        await message.answer(
+            text=text,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
+
+
+@dp.message(CommandStart())
+async def cmd_start_handler(message: Message) -> None:
+    """Triggered on /start"""
+    await send_welcome(message)
+
+
+@dp.message(Command("channels"))
+async def cmd_channels_handler(message: Message) -> None:
+    """Triggered on /channels"""
+    await send_welcome(message)
+
+
+@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة"]))
+async def text_start_handler(message: Message) -> None:
+    """
+    Catches text messages matching start, star, ابدأ, etc.
+    Guarantees response even if user sends text without leading slash!
+    """
+    await send_welcome(message)
+
+
+@dp.callback_query(F.data.startswith("page:"))
+async def pagination_callback_handler(callback: CallbackQuery) -> None:
+    try:
+        _, page_str = callback.data.split(":")
+        page = int(page_str)
+        markup = build_channels_page_markup(page=page)
+        text = get_welcome_text()
+
+        if callback.message.photo:
+            await callback.message.edit_caption(
+                caption=text,
+                reply_markup=markup,
+            )
+        else:
+            await callback.message.edit_text(
+                text=text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+        await callback.answer()
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            logging.error("Telegram BadRequest in pagination: %s", exc)
+        await callback.answer()
+    except Exception as exc:
+        logging.error("Pagination error: %s", exc)
+        await callback.answer("⚠️ تم تحديث القائمة")
+
+
+@dp.callback_query(F.data.startswith("ch:"))
+async def channel_selection_handler(callback: CallbackQuery) -> None:
+    try:
+        parts = callback.data.split(":")
+        channel_idx = int(parts[1])
+        return_page = int(parts[2]) if len(parts) > 2 else 0
+
+        detail_text = get_channel_detail_text(channel_idx)
+        markup = build_channel_player_markup(
+            channel_idx=channel_idx,
+            return_page=return_page,
+            include_intent_button=True,
+        )
+
+        try:
+            if callback.message.photo:
+                await callback.message.edit_caption(
+                    caption=detail_text,
+                    reply_markup=markup,
+                )
+            else:
+                await callback.message.edit_text(
+                    text=detail_text,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
+        except TelegramBadRequest as bad_req:
+            # Fallback if Telegram API rejects intent: URL scheme in inline button
+            if "BUTTON_URL_INVALID" in str(bad_req):
+                fallback_markup = build_channel_player_markup(
+                    channel_idx=channel_idx,
+                    return_page=return_page,
+                    include_intent_button=False,
+                )
+                if callback.message.photo:
+                    await callback.message.edit_caption(
+                        caption=detail_text,
+                        reply_markup=fallback_markup,
+                    )
+                else:
+                    await callback.message.edit_text(
+                        text=detail_text,
+                        reply_markup=fallback_markup,
+                        disable_web_page_preview=True,
+                    )
+            else:
+                raise bad_req
+
+        await callback.answer()
+
+    except Exception as exc:
+        logging.error("Error opening channel: %s", exc)
+        await callback.answer("⚠️ حدث خطأ أثناء فتح القناة")
+
+
+@dp.callback_query(F.data.startswith("copy:"))
+async def copy_callback_handler(callback: CallbackQuery) -> None:
+    try:
+        parts = callback.data.split(":")
+        channel_idx = int(parts[1])
+        channel_name, _ = CHANNEL_LIST[channel_idx]
+        await callback.answer(
+            f"✅ تم نسخ رابط {channel_name} من الرسالة!",
+            show_alert=True,
+        )
+    except Exception:
+        await callback.answer("✅ الرابط متاح داخل الرسالة للنسخ المباشر")
+
+
+@dp.callback_query(F.data == "noop")
+async def noop_callback_handler(callback: CallbackQuery) -> None:
+    await callback.answer(f"الصفحة الحالية من أصل {TOTAL_PAGES}")
+
+
+# ---------------------------------------------------------------------------
+# 6. APPLICATION ENTRYPOINT
+# ---------------------------------------------------------------------------
+async def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    logger = logging.getLogger("aliSTREAM.bot")
+
+    print("\n" + "=" * 50)
+    print("🚀 بدء تشغيل بوت aliSTREAM Live TV...")
+    print(f"📡 عدد القنوات المحملة: {TOTAL_CHANNELS} قناة عبر {TOTAL_PAGES} صفحات")
+    print("=" * 50 + "\n")
+
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-# =========================================================================
-# تشغيل البوت
-# =========================================================================
-async def post_init(application):
-    global main_async_loop
-    main_async_loop = asyncio.get_running_loop()
-    logger.info("Main asyncio loop captured successfully in post_init.")
+    # 1. Verify Bot Token against Telegram API
+    try:
+        bot_info = await bot.get_me()
+        print(f"✅ تم الاتصال بنجاح بخوادم تيليجرام!")
+        print(f"🤖 اسم البوت: @{bot_info.username} (ID: {bot_info.id})")
+        print("🟢 البوت يعمل الآن وبانتظار أمر /start من المستخدمين...\n")
+    except TelegramUnauthorizedError:
+        print("\n" + "!" * 60)
+        print("❌ خطأ فادح: توكن البوت غير صالح أو تم إلغاؤه (401 Unauthorized)!")
+        print(f"🔑 التوكن المستخدم حالياً: {BOT_TOKEN}")
+        print("💡 الحل:")
+        print("1. افتح تطبيق تيليجرام وتوجه إلى @BotFather")
+        print("2. أرسل الأمر /token واختر البوت الخاص بك للحصول على التوكن الصحيح.")
+        print("3. ضع التوكن الجديد في السطر 39 في ملف bot.py، أو قم بتعيينه عبر:")
+        print("   export BOT_TOKEN='توكنك_هنا'")
+        print("!" * 60 + "\n")
+        await bot.session.close()
+        return
+    except Exception as exc:
+        logger.error("خطأ أثناء التحقق من التوكن: %s", exc)
+        await bot.session.close()
+        return
 
-def main():
-    global telegram_app
+    # 2. Clear old pending updates & Start Polling
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+    except Exception as exc:
+        logger.error("خطأ أثناء تشغيل البوت: %s", exc)
+    finally:
+        await bot.session.close()
+        logger.info("تم إيقاف جلسة البوت بنجاح.")
 
-    print("=" * 65)
-    print(f"Starting Football Bot with Adsgram (Block ID: {ADSGRAM_BLOCK_ID})...")
-    print("=" * 65)
-
-    # 1. تشغيل خادم الويب وخدمة Adsgram على المنفذ 10000
-    server_thread = threading.Thread(target=start_render_web_server, daemon=True)
-    server_thread.start()
-
-    # 2. بناء تطبيق التليجرام مع ربط المهلة الزمنية وإعادة المحاولة التلقائية
-    request_config = HTTPXRequest(
-        connect_timeout=25.0,
-        read_timeout=25.0,
-        write_timeout=25.0,
-        pool_timeout=25.0
-    )
-    telegram_app = (
-        ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
-        .request(request_config)
-        .post_init(post_init)
-        .build()
-    )
-
-    # 3. تسجيل المعالجات
-    telegram_app.add_handler(CommandHandler("start", start_command))
-    telegram_app.add_handler(CallbackQueryHandler(handle_callback_query))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
-
-    logger.info("Bot is running and ready for users...")
-    telegram_app.run_polling(drop_pending_updates=True, bootstrap_retries=10)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("\n🛑 تم إيقاف البوت يدوياً بواسطة المستخدم.")
