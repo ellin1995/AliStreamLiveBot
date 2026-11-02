@@ -23,7 +23,6 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
-    BufferedInputFile,
     CallbackQuery,
     CopyTextButton,
     InlineKeyboardButton,
@@ -41,7 +40,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
 SUPABASE_URL = "https://ddywqmupodubrwlaflem.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h"
 
-# Render automatically provides RENDER_EXTERNAL_URL (e.g. https://yourapp.onrender.com)
+# Render provides RENDER_EXTERNAL_URL automatically (e.g. https://your-bot.onrender.com)
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 FALLBACK_WEB_PLAYER = (
     "https://ddywqmupodubrwlaflem.supabase.co/storage/v1/object/public/web-player/index.html"
@@ -52,7 +51,6 @@ WATERMARK = "#Alistreamlivebot"
 
 ITEMS_PER_PAGE = 8
 
-# Path to the bundled Web Player HTML file
 BASE_DIR = Path(__file__).resolve().parent
 WEB_PLAYER_FILE = BASE_DIR / "web_player" / "index.html"
 
@@ -118,26 +116,21 @@ TOTAL_PAGES = (TOTAL_CHANNELS + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
 
 
 def get_web_player_base_url() -> str:
-    """Returns the active web player URL (hosted on Render if available, or fallback)."""
+    """Returns player URL (hosted on Render if available, or Supabase)."""
     if RENDER_EXTERNAL_URL:
         return f"{RENDER_EXTERNAL_URL}/player"
     return FALLBACK_WEB_PLAYER
 
 
-def generate_m3u_playlist(channel_idx: int = None) -> bytes:
-    """Generates an M3U IPTV playlist formatted for VLC and external IPTV apps."""
-    lines = ["#EXTM3U\n"]
-    if channel_idx is not None:
-        name, url = CHANNEL_LIST[channel_idx]
-        lines.append(f'#EXTINF:-1 tvg-logo="{LOGO_URL}" group-title="beIN SPORTS",{name}\n{url}\n')
-    else:
-        for name, url in CHANNEL_LIST:
-            lines.append(f'#EXTINF:-1 tvg-logo="{LOGO_URL}" group-title="beIN SPORTS",{name}\n{url}\n')
-    return "".join(lines).encode("utf-8")
+def get_vlc_bridge_url(stream_url: str) -> str:
+    """Returns web bridge URL that triggers VLC/external player directly."""
+    if RENDER_EXTERNAL_URL:
+        return f"{RENDER_EXTERNAL_URL}/vlc?url={urllib.parse.quote(stream_url, safe='')}"
+    return f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
 
 
 # ---------------------------------------------------------------------------
-# 3. KEYBOARD GENERATORS
+# 3. KEYBOARD GENERATORS (CLEAN & PROFESSIONAL - NO DOWNLOAD BUTTONS)
 # ---------------------------------------------------------------------------
 def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
     """Builds channels keyboard showing ONLY channel names."""
@@ -181,15 +174,6 @@ def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
         )
 
     keyboard.append(nav_row)
-
-    # All channels M3U download button
-    keyboard.append([
-        InlineKeyboardButton(
-            text="📥 تحميل ملف كل القنوات (M3U لـ VLC)",
-            callback_data="m3u:all",
-        )
-    ])
-
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -199,12 +183,12 @@ def build_channel_player_markup(
     include_intent_button: bool = True,
 ) -> InlineKeyboardMarkup:
     """
-    Builds playback options for the selected channel:
-    1. Web Player with logo mask and #Alistreamlivebot watermark.
-    2. External Player launchers (VLC / MX Player).
-    3. One-tap Copy Stream Link.
-    4. One-tap Download Channel M3U File for direct VLC launch.
-    5. Back to menu preserving page.
+    Builds professional playback controls for the selected channel:
+    1. Primary Web Player (Live stream with logo mask hiding channel logo & watermark).
+    2. Primary External Player (VLC / MX Player on Android).
+    3. One-tap Copy Stream URL.
+    4. Back to Channels menu.
+    * NOTE: All file download buttons are completely removed per user request.
     """
     channel_name, stream_url = CHANNEL_LIST[channel_idx]
 
@@ -213,40 +197,30 @@ def build_channel_player_markup(
     base_player = get_web_player_base_url()
     web_player_url = f"{base_player}?url={encoded_stream}&title={encoded_title}"
 
-    # VLC Android Intent URL
-    vlc_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
-
     keyboard: List[List[InlineKeyboardButton]] = []
 
-    # 1. Telegram Web App Player button
+    # 1. Primary In-App Web Player (Covers channel logo + Watermark)
     keyboard.append([
         InlineKeyboardButton(
-            text="▶️ تشغيل في المتصفح | Web Player",
+            text="▶️ تشغيل البث المباشر (المشغل الأساسي)",
             web_app=WebAppInfo(url=web_player_url),
         )
     ])
 
-    # 2. VLC Intent Android Link button (Safe inline URL)
+    # 2. Primary External Player Launcher (VLC / MX Player)
+    vlc_url = get_vlc_bridge_url(stream_url)
     if include_intent_button:
         try:
             keyboard.append([
                 InlineKeyboardButton(
-                    text="🎬 تشغيل فوري في VLC (أندرويد)",
-                    url=vlc_intent_url,
+                    text="🎬 تشغيل في مشغل خارجي (VLC / MX)",
+                    url=vlc_url,
                 )
             ])
         except Exception:
             pass
 
-    # 3. Direct M3U file button (Opens in VLC/MX on phone with 1 tap!)
-    keyboard.append([
-        InlineKeyboardButton(
-            text="📥 فتح القناة عبر ملف M3U (VLC / MX)",
-            callback_data=f"m3u:{channel_idx}",
-        )
-    ])
-
-    # 4. Direct Copy Text Button (Telegram native clipboard copy)
+    # 3. Direct Copy Text Button (Telegram native clipboard copy)
     try:
         keyboard.append([
             InlineKeyboardButton(
@@ -262,7 +236,7 @@ def build_channel_player_markup(
             )
         ])
 
-    # 5. Back to Channels Menu Button
+    # 4. Back to Channels Menu Button
     keyboard.append([
         InlineKeyboardButton(
             text="🔙 العودة لقائمة القنوات",
@@ -281,7 +255,7 @@ def get_welcome_text() -> str:
         f"👋 <b>مرحباً بك في بوت aliSTREAM للبث المباشر!</b>\n\n"
         f"⚽ <b>باقة قنوات beIN SPORTS المشفرة بجودة عالية</b>\n"
         f"📡 إجمالي القنوات المتاحة: <b>{TOTAL_CHANNELS}</b> قناة\n\n"
-        f"👇 <i>اختر القناة المطلوبة من الأزرار أدناه:</i>\n"
+        f"👇 <i>اضغط على أي قناة لبدء البث المباشر فوراً:</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <i>{WATERMARK}</i>"
     )
@@ -289,26 +263,21 @@ def get_welcome_text() -> str:
 
 def get_channel_detail_text(channel_idx: int) -> str:
     channel_name, stream_url = CHANNEL_LIST[channel_idx]
-    vlc_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
-    mx_intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=com.mxtech.videoplayer.ad;end"
+    vlc_intent = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
 
     safe_name = html.escape(channel_name)
     safe_stream = html.escape(stream_url)
-    safe_vlc = html.escape(vlc_intent_url)
-    safe_mx = html.escape(mx_intent_url)
+    safe_vlc = html.escape(vlc_intent)
 
     return (
         f"📺 <b>القناة:</b> <code>{safe_name}</code>\n"
-        f"🟢 <b>الحالة:</b> بث حي ومباشر (LIVE 24/7)\n"
+        f"🟢 <b>الحالة:</b> بث مباشر مستمر (LIVE 24/7)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎬 <b>طرق التشغيل الموصى بها لأعلى جودة:</b>\n\n"
-        f"1️⃣ <b>تطبيق VLC Player (أندرويد):</b>\n"
+        f"🎬 <b>المشغل الخارجي الأساسي (VLC Player):</b>\n"
         f"<code>{safe_vlc}</code>\n\n"
-        f"2️⃣ <b>تطبيق MX Player:</b>\n"
-        f"<code>{safe_mx}</code>\n\n"
-        f"3️⃣ <b>رابط البث المباشر (نسخ يدوي):</b>\n"
+        f"🔗 <b>رابط البث المباشر (نسخ يدوي):</b>\n"
         f"<code>{safe_stream}</code>\n\n"
-        f"💡 <i>اضغط على زر <b>'فتح القناة عبر ملف M3U'</b> أدناه لفتح البث فوراً داخل VLC أو MX Player على هاتفك بنقرة واحدة!</i>\n"
+        f"💡 <i>اضغط على <b>'تشغيل البث المباشر'</b> للمشاهدة فوراً مع شعار البوت، أو افتحه في <b>VLC Player</b> بأعلى جودة!</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <i>{WATERMARK}</i>"
     )
@@ -340,22 +309,7 @@ async def cmd_channels_handler(message: Message) -> None:
     await send_welcome(message)
 
 
-@dp.message(Command("m3u"))
-async def cmd_m3u_handler(message: Message) -> None:
-    """Sends full channels M3U playlist file."""
-    m3u_bytes = generate_m3u_playlist()
-    file = BufferedInputFile(m3u_bytes, filename="aliSTREAM_Live_beIN.m3u")
-    await message.answer_document(
-        document=file,
-        caption=(
-            f"⚽ <b>ملف قنوات beIN SPORTS كامل (50 قناة)</b>\n"
-            f"📱 افتح هذا الملف بتطبيق <b>VLC</b> أو <b>MX Player</b> لتشغيل جميع القنوات فوراً وبدون تقطيع!\n"
-            f"🏷️ <i>{WATERMARK}</i>"
-        ),
-    )
-
-
-@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "m3u"]))
+@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة"]))
 async def text_start_handler(message: Message) -> None:
     await send_welcome(message)
 
@@ -385,6 +339,11 @@ async def pagination_callback_handler(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("ch:"))
 async def channel_selection_handler(callback: CallbackQuery) -> None:
+    """
+    When any channel is clicked, immediately opens playback view with:
+    - Primary Web Player (with logo masking original beIN sports logo & watermark).
+    - Primary External Player launcher (VLC / MX Player).
+    """
     try:
         parts = callback.data.split(":")
         channel_idx = int(parts[1])
@@ -425,31 +384,6 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ حدث خطأ أثناء فتح القناة")
 
 
-@dp.callback_query(F.data.startswith("m3u:"))
-async def m3u_callback_handler(callback: CallbackQuery) -> None:
-    """Generates and sends M3U playlist file for instant external player playback."""
-    try:
-        param = callback.data.split(":")[1]
-        if param == "all":
-            m3u_data = generate_m3u_playlist()
-            file_name = "aliSTREAM_All_Channels.m3u"
-            caption = f"⚽ <b>قائمة جميع القنوات (50 قناة)</b>\n🏷️ <i>{WATERMARK}</i>"
-        else:
-            idx = int(param)
-            ch_name, _ = CHANNEL_LIST[idx]
-            m3u_data = generate_m3u_playlist(idx)
-            clean_name = "".join(c for c in ch_name if c.isalnum() or c in (" ", "_", "-")).strip()
-            file_name = f"{clean_name}.m3u"
-            caption = f"📺 <b>ملف تشغيل قناة {ch_name}</b>\nاضغط لفتحه في VLC أو MX Player!\n🏷️ <i>{WATERMARK}</i>"
-
-        file = BufferedInputFile(m3u_data, filename=file_name)
-        await callback.message.answer_document(document=file, caption=caption)
-        await callback.answer("✅ تم إرسال ملف التشغيل!")
-    except Exception as exc:
-        logging.error("Error generating M3U: %s", exc)
-        await callback.answer("⚠️ تعذر إنشاء الملف")
-
-
 @dp.callback_query(F.data.startswith("copy:"))
 async def copy_callback_handler(callback: CallbackQuery) -> None:
     try:
@@ -470,7 +404,7 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. EMBEDDED HTTP WEB PLAYER SERVER (FOR RENDER & EXTERNAL BROWSERS)
+# 6. EMBEDDED HTTP WEB SERVER & EXTERNAL PLAYER REDIRECT BRIDGE
 # ---------------------------------------------------------------------------
 async def render_health_handler(request: web.Request) -> web.Response:
     return web.Response(
@@ -487,14 +421,35 @@ async def web_player_handler(request: web.Request) -> web.Response:
     return web.Response(text="Web Player not found", status=404)
 
 
-async def m3u_playlist_http_handler(request: web.Request) -> web.Response:
-    """Serves raw M3U playlist file over HTTP."""
-    data = generate_m3u_playlist()
-    return web.Response(
-        body=data,
-        content_type="application/x-mpegurl",
-        headers={"Content-Disposition": 'attachment; filename="aliSTREAM.m3u"'},
-    )
+async def vlc_external_bridge_handler(request: web.Request) -> web.Response:
+    """
+    HTTP redirect bridge that automatically launches VLC / External Player on Android!
+    """
+    stream_url = request.query.get("url", "")
+    if not stream_url:
+        return web.Response(text="Missing stream URL", status=400)
+
+    intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
+
+    # HTML page that immediately fires the Android Intent
+    html_redirect = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>جاري فتح مشغل VLC...</title>
+    <script>
+        window.location.href = "{intent_url}";
+        setTimeout(function() {{
+            window.location.href = "{stream_url}";
+        }}, 2000);
+    </script>
+</head>
+<body style="background:#000;color:#fff;text-align:center;padding-top:20%;font-family:sans-serif;">
+    <h2>🎬 جاري فتح القناة في مشغل VLC...</h2>
+    <p>إذا لم يفتح المشغل تلقائياً، <a href="{intent_url}" style="color:#00e5ff;">اضغط هنا للتشغيل</a></p>
+</body>
+</html>"""
+    return web.Response(text=html_redirect, content_type="text/html; charset=utf-8")
 
 
 async def start_http_server(port: int) -> web.AppRunner:
@@ -502,7 +457,7 @@ async def start_http_server(port: int) -> web.AppRunner:
     app.router.add_get("/", render_health_handler)
     app.router.add_get("/health", render_health_handler)
     app.router.add_get("/player", web_player_handler)
-    app.router.add_get("/playlist.m3u", m3u_playlist_http_handler)
+    app.router.add_get("/vlc", vlc_external_bridge_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
