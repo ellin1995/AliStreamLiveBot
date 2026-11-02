@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>aliSTREAM Live Player</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- mpegts.js for MPEG-TS (.ts) live streaming -->
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@latest/dist/mpegts.min.js"></script>
+  <!-- HLS.js fallback -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+    body {
+      background-color: #07090e;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Video Player Container */
+    .player-container {
+      position: relative;
+      width: 100%;
+      height: 65vh;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+
+    /* ========================================================= */
+    /* LOGO MASK: Covers & Hides the original beIN SPORTS logo   */
+    /* Placed in the TOP-RIGHT corner                            */
+    /* ========================================================= */
+    .channel-logo-mask {
+      position: absolute;
+      top: 14px;
+      right: 16px;
+      z-index: 1000;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #000000;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1.5px solid rgba(0, 229, 255, 0.4);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.95);
+      min-width: 110px;
+      min-height: 42px;
+    }
+    .channel-logo-mask img {
+      max-height: 38px;
+      max-width: 130px;
+      object-fit: contain;
+      display: block;
+    }
+    .fallback-logo-text {
+      font-weight: 900;
+      font-size: 14px;
+      color: #00e5ff;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      text-shadow: 0 0 10px rgba(0, 229, 255, 0.8);
+    }
+
+    /* ========================================================= */
+    /* WATERMARK OVERLAY: #Alistreamlivebot                      */
+    /* Placed in the BOTTOM-LEFT corner                          */
+    /* ========================================================= */
+    .watermark-tag {
+      position: absolute;
+      bottom: 14px;
+      left: 16px;
+      z-index: 1000;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.75);
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      font-size: 13px;
+      font-weight: 800;
+      color: #00e5ff;
+      letter-spacing: 0.8px;
+      text-shadow: 0 0 8px rgba(0, 229, 255, 0.7);
+      user-select: none;
+    }
+
+    /* Loading Spinner */
+    .spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 50px;
+      height: 50px;
+      border: 4px solid rgba(255, 255, 255, 0.15);
+      border-top-color: #00e5ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      z-index: 500;
+    }
+    @keyframes spin {
+      to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+
+    /* External Player & Control Panel */
+    .control-panel {
+      flex: 1;
+      padding: 16px;
+      background: #0f141f;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .channel-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .channel-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: #ffffff;
+    }
+    .live-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(229, 9, 20, 0.15);
+      color: #ff3344;
+      border: 1px solid rgba(229, 9, 20, 0.4);
+      padding: 3px 9px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+    }
+    .live-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ff3344;
+      box-shadow: 0 0 8px #ff3344;
+      animation: pulse 1.2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* Primary External Player Buttons */
+    .buttons-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .btn-main {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      border: none;
+      outline: none;
+    }
+    /* VLC - Main Primary External Player */
+    .btn-vlc-primary {
+      background: linear-gradient(135deg, #ff8800, #ff5500);
+      color: #ffffff;
+      box-shadow: 0 4px 16px rgba(255, 102, 0, 0.45);
+    }
+    /* MX Player */
+    .btn-mx {
+      background: linear-gradient(135deg, #0077ff, #0044ff);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(0, 102, 255, 0.35);
+    }
+    /* Generic Intent / All External Players */
+    .btn-all-players {
+      background: linear-gradient(135deg, #00c853, #009624);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(0, 200, 83, 0.35);
+    }
+    /* Copy Link Button */
+    .btn-copy {
+      background: #1c2433;
+      color: #d1d9e6;
+      border: 1px solid #2d3a4f;
+    }
+    .btn-main:active {
+      transform: scale(0.97);
+    }
+
+    .toast-msg {
+      position: fixed;
+      bottom: 25px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #00e5ff;
+      color: #000000;
+      padding: 8px 22px;
+      border-radius: 25px;
+      font-weight: 800;
+      font-size: 13px;
+      display: none;
+      z-index: 2000;
+      box-shadow: 0 4px 15px rgba(0, 229, 255, 0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Video Player Wrapper -->
+  <div class="player-container">
+    <video id="video-stream" controls autoplay playsinline preload="auto"></video>
+    <div id="loading-spinner" class="spinner"></div>
+
+    <!-- 1. LOGO MASK: Covers beIN Sports Logo in Top-Right -->
+    <div class="channel-logo-mask">
+      <img id="logo-img" src="https://a.top4top.io/p_39583wl340.png" alt="aliSTREAM" onerror="this.style.display='none'; document.getElementById('fallback-logo').style.display='block';" />
+      <span id="fallback-logo" class="fallback-logo-text" style="display:none;">⚡ aliSTREAM</span>
+    </div>
+
+    <!-- 2. WATERMARK: #Alistreamlivebot in Bottom-Left -->
+    <div class="watermark-tag">#Alistreamlivebot</div>
+  </div>
+
+  <!-- Primary External Player Controls -->
+  <div class="control-panel">
+    <div class="channel-info">
+      <span class="channel-title" id="chan-title">beIN SPORTS LIVE</span>
+      <div class="live-indicator">
+        <span class="live-dot"></span>
+        <span>مباشر</span>
+      </div>
+    </div>
+
+    <!-- External Player Primary Buttons -->
+    <div class="buttons-group">
+      <!-- VLC Player (Primary External) -->
+      <a id="link-vlc" class="btn-main btn-vlc-primary" href="#">
+        <span>🎬</span> تشغيل مباشر عبر VLC Player
+      </a>
+
+      <!-- MX Player -->
+      <a id="link-mx" class="btn-main btn-mx" href="#">
+        <span>🚀</span> تشغيل عبر MX Player
+      </a>
+
+      <!-- All Android Players -->
+      <a id="link-all" class="btn-main btn-all-players" href="#">
+        <span>📱</span> فتح في أي مشغل خارجي (All Players)
+      </a>
+
+      <!-- Copy Stream Link -->
+      <button class="btn-main btn-copy" onclick="copyStreamUrl()">
+        <span>📋</span> نسخ رابط البث المباشر
+      </button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast-msg">✅ تم نسخ رابط البث بنجاح!</div>
+
+  <script>
+    // Extract stream URL and Channel Title from query parameters
+    const params = new URLSearchParams(window.location.search);
+    const rawUrl = params.get('url') || 'http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts';
+    const channelName = params.get('title') || 'beIN SPORTS LIVE';
+
+    if (channelName) {
+      document.getElementById('chan-title').innerText = decodeURIComponent(channelName);
+    }
+
+    // Android Intent schemes for External Players
+    const vlcIntent = `intent:${rawUrl}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end`;
+    const mxIntent = `intent:${rawUrl}#Intent;action=android.intent.action.VIEW;type=video/*;package=com.mxtech.videoplayer.ad;end`;
+    const allIntent = `intent:${rawUrl}#Intent;action=android.intent.action.VIEW;type=video/*;end`;
+
+    document.getElementById('link-vlc').href = vlcIntent;
+    document.getElementById('link-mx').href = mxIntent;
+    document.getElementById('link-all').href = allIntent;
+
+    const video = document.getElementById('video-stream');
+    const spinner = document.getElementById('loading-spinner');
+
+    video.addEventListener('playing', () => { spinner.style.display = 'none'; });
+    video.addEventListener('waiting', () => { spinner.style.display = 'block'; });
+    video.addEventListener('canplay', () => { spinner.style.display = 'none'; });
+
+    // Initialize mpegts.js for live .ts stream playback
+    function startStream() {
+      if (mpegts.getFeatureList().mseLivePlayback) {
+        try {
+          const player = mpegts.createPlayer({
+            type: 'mse',
+            isLive: true,
+            url: rawUrl,
+            cors: true,
+          }, {
+            enableWorker: true,
+            lazyLoadMaxDuration: 180,
+            seekType: 'range',
+            liveBufferLatencyChasing: true,
+          });
+
+          player.attachMediaElement(video);
+          player.load();
+          player.play().catch(() => {
+            video.muted = true;
+            player.play();
+          });
+
+          player.on(mpegts.Events.ERROR, function(type, details) {
+            console.warn('mpegts playback error:', type, details);
+            fallbackHls();
+          });
+          return;
+        } catch (err) {
+          console.warn('mpegts init exception:', err);
+        }
+      }
+      fallbackHls();
+    }
+
+    function fallbackHls() {
+      if (Hls.isSupported()) {
+        const hls = new Hls({ enableWorker: true });
+        hls.loadSource(rawUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => { video.muted = true; video.play(); });
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = rawUrl;
+        video.play();
+      }
+    }
+
+    startStream();
+
+    function copyStreamUrl() {
+      navigator.clipboard.writeText(rawUrl).then(() => {
+        showToast();
+      }).catch(() => {
+        const inp = document.createElement('input');
+        inp.value = rawUrl;
+        document.body.appendChild(inp);
+        inp.select();
+        document.execCommand('copy');
+        document.body.removeChild(inp);
+        showToast();
+      });
+    }
+
+    function showToast() {
+      const toast = document.getElementById('toast');
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 2200);
+    }
+  </script>
+</body>
+</html>
