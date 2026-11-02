@@ -3,6 +3,7 @@
 aliSTREAM Live TV Bot - Production Ready Telegram Streaming Bot
 Framework: aiogram v3 (Modern Asynchronous Python Telegram Bot Framework)
 Environment: Optimized for Android Termux / Render.com / VPS / Linux / Windows
+Player: Exclusive Direct VLC Player Integration (Auto-Launch)
 Watermark: #Alistreamlivebot
 =============================================================================
 """
@@ -13,7 +14,6 @@ import logging
 import os
 import sys
 import urllib.parse
-from pathlib import Path
 from typing import List, Tuple
 
 from aiohttp import web
@@ -24,11 +24,9 @@ from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
-    CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
-    WebAppInfo,
 )
 
 # ---------------------------------------------------------------------------
@@ -37,22 +35,14 @@ from aiogram.types import (
 DEFAULT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
 BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
 
-SUPABASE_URL = "https://ddywqmupodubrwlaflem.supabase.co"
-SUPABASE_ANON_KEY = "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h"
-
-# Render provides RENDER_EXTERNAL_URL automatically (e.g. https://your-bot.onrender.com)
+# Base server URL: Automatically uses Render URL if deployed on Render,
+# or defaults to localhost for Termux / local execution.
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-FALLBACK_WEB_PLAYER = (
-    "https://ddywqmupodubrwlaflem.supabase.co/storage/v1/object/public/web-player/index.html"
-)
+LOCAL_DEFAULT_URL = f"http://127.0.0.1:{os.getenv('PORT', '8080')}"
+SERVER_BASE_URL = RENDER_EXTERNAL_URL if RENDER_EXTERNAL_URL else LOCAL_DEFAULT_URL
 
-LOGO_URL = "https://a.top4top.io/p_39583wl340.png"
 WATERMARK = "#Alistreamlivebot"
-
 ITEMS_PER_PAGE = 8
-
-BASE_DIR = Path(__file__).resolve().parent
-WEB_PLAYER_FILE = BASE_DIR / "web_player" / "index.html"
 
 # ---------------------------------------------------------------------------
 # 2. CHANNELS DATA (SECURE BACKGROUND MAPPING)
@@ -115,25 +105,17 @@ TOTAL_CHANNELS = len(CHANNEL_LIST)
 TOTAL_PAGES = (TOTAL_CHANNELS + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
 
 
-def get_web_player_base_url() -> str:
-    """Returns player URL (hosted on Render if available, or Supabase)."""
-    if RENDER_EXTERNAL_URL:
-        return f"{RENDER_EXTERNAL_URL}/player"
-    return FALLBACK_WEB_PLAYER
-
-
-def get_vlc_bridge_url(stream_url: str) -> str:
-    """Returns web bridge URL that triggers VLC/external player directly."""
-    if RENDER_EXTERNAL_URL:
-        return f"{RENDER_EXTERNAL_URL}/vlc?url={urllib.parse.quote(stream_url, safe='')}"
-    return f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
+def get_vlc_launch_url(stream_url: str) -> str:
+    """Generates direct auto-launch URL for VLC Player."""
+    encoded_stream = urllib.parse.quote(stream_url, safe="")
+    return f"{SERVER_BASE_URL}/vlc?url={encoded_stream}"
 
 
 # ---------------------------------------------------------------------------
-# 3. KEYBOARD GENERATORS (CLEAN & PROFESSIONAL - NO DOWNLOAD BUTTONS)
+# 3. KEYBOARD GENERATORS (EXCLUSIVE VLC - ZERO CLUTTER)
 # ---------------------------------------------------------------------------
 def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
-    """Builds channels keyboard showing ONLY channel names."""
+    """Builds clean paginated channels list (Channel names only)."""
     page = max(0, min(page, TOTAL_PAGES - 1))
     start_idx = page * ITEMS_PER_PAGE
     end_idx = min(start_idx + ITEMS_PER_PAGE, TOTAL_CHANNELS)
@@ -177,73 +159,32 @@ def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def build_channel_player_markup(
-    channel_idx: int,
-    return_page: int,
-    include_intent_button: bool = True,
-) -> InlineKeyboardMarkup:
+def build_vlc_only_markup(channel_idx: int, return_page: int) -> InlineKeyboardMarkup:
     """
-    Builds professional playback controls for the selected channel:
-    1. Primary Web Player (Live stream with logo mask hiding channel logo & watermark).
-    2. Primary External Player (VLC / MX Player on Android).
-    3. One-tap Copy Stream URL.
-    4. Back to Channels menu.
-    * NOTE: All file download buttons are completely removed per user request.
+    Builds the playback keyboard:
+    - Single Primary VLC Auto-Launch Button.
+    - Back to Channels Menu Button.
+    No other players or download buttons.
     """
-    channel_name, stream_url = CHANNEL_LIST[channel_idx]
+    _, stream_url = CHANNEL_LIST[channel_idx]
+    vlc_url = get_vlc_launch_url(stream_url)
 
-    encoded_stream = urllib.parse.quote(stream_url, safe="")
-    encoded_title = urllib.parse.quote(channel_name, safe="")
-    base_player = get_web_player_base_url()
-    web_player_url = f"{base_player}?url={encoded_stream}&title={encoded_title}"
-
-    keyboard: List[List[InlineKeyboardButton]] = []
-
-    # 1. Primary In-App Web Player (Covers channel logo + Watermark)
-    keyboard.append([
-        InlineKeyboardButton(
-            text="▶️ تشغيل البث المباشر (المشغل الأساسي)",
-            web_app=WebAppInfo(url=web_player_url),
-        )
-    ])
-
-    # 2. Primary External Player Launcher (VLC / MX Player)
-    vlc_url = get_vlc_bridge_url(stream_url)
-    if include_intent_button:
-        try:
-            keyboard.append([
-                InlineKeyboardButton(
-                    text="🎬 تشغيل في مشغل خارجي (VLC / MX)",
-                    url=vlc_url,
-                )
-            ])
-        except Exception:
-            pass
-
-    # 3. Direct Copy Text Button (Telegram native clipboard copy)
-    try:
-        keyboard.append([
+    keyboard: List[List[InlineKeyboardButton]] = [
+        # 1. Sole Primary VLC Player Auto-Launch Button
+        [
             InlineKeyboardButton(
-                text="📋 نسخ رابط البث المباشر",
-                copy_text=CopyTextButton(text=stream_url),
+                text="🎬 تشغيل فوري في مشغل VLC",
+                url=vlc_url,
             )
-        ])
-    except Exception:
-        keyboard.append([
+        ],
+        # 2. Back to menu
+        [
             InlineKeyboardButton(
-                text="📋 نسخ رابط البث المباشر",
-                callback_data=f"copy:{channel_idx}:{return_page}",
+                text="🔙 العودة لقائمة القنوات",
+                callback_data=f"page:{return_page}",
             )
-        ])
-
-    # 4. Back to Channels Menu Button
-    keyboard.append([
-        InlineKeyboardButton(
-            text="🔙 العودة لقائمة القنوات",
-            callback_data=f"page:{return_page}",
-        )
-    ])
-
+        ],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -253,9 +194,9 @@ def build_channel_player_markup(
 def get_welcome_text() -> str:
     return (
         f"👋 <b>مرحباً بك في بوت aliSTREAM للبث المباشر!</b>\n\n"
-        f"⚽ <b>باقة قنوات beIN SPORTS المشفرة بجودة عالية</b>\n"
+        f"⚽ <b>باقة قنوات beIN SPORTS المشفرة بأعلى جودة</b>\n"
         f"📡 إجمالي القنوات المتاحة: <b>{TOTAL_CHANNELS}</b> قناة\n\n"
-        f"👇 <i>اضغط على أي قناة لبدء البث المباشر فوراً:</i>\n"
+        f"👇 <i>اختر القناة المطلوبة للتشغيل الفوري في مشغل VLC:</i>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <i>{WATERMARK}</i>"
     )
@@ -263,21 +204,17 @@ def get_welcome_text() -> str:
 
 def get_channel_detail_text(channel_idx: int) -> str:
     channel_name, stream_url = CHANNEL_LIST[channel_idx]
-    vlc_intent = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
-
     safe_name = html.escape(channel_name)
     safe_stream = html.escape(stream_url)
-    safe_vlc = html.escape(vlc_intent)
 
     return (
         f"📺 <b>القناة:</b> <code>{safe_name}</code>\n"
-        f"🟢 <b>الحالة:</b> بث مباشر مستمر (LIVE 24/7)\n"
+        f"🟢 <b>الحالة:</b> بث حي ومباشر (LIVE)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎬 <b>المشغل الخارجي الأساسي (VLC Player):</b>\n"
-        f"<code>{safe_vlc}</code>\n\n"
+        f"🎬 <b>المشغل الرسمي للبوت:</b> مشغل VLC Player\n\n"
+        f"👇 <i>اضغط على زر <b>'تشغيل فوري في مشغل VLC'</b> أدناه لفتح البث المباشر فوراً على هاتفك بأعلى دقة وبدون أي تقطيع!</i>\n\n"
         f"🔗 <b>رابط البث المباشر (نسخ يدوي):</b>\n"
-        f"<code>{safe_stream}</code>\n\n"
-        f"💡 <i>اضغط على <b>'تشغيل البث المباشر'</b> للمشاهدة فوراً مع شعار البوت، أو افتحه في <b>VLC Player</b> بأعلى جودة!</i>\n"
+        f"<code>{safe_stream}</code>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <i>{WATERMARK}</i>"
     )
@@ -309,7 +246,7 @@ async def cmd_channels_handler(message: Message) -> None:
     await send_welcome(message)
 
 
-@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة"]))
+@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "vlc"]))
 async def text_start_handler(message: Message) -> None:
     await send_welcome(message)
 
@@ -340,9 +277,7 @@ async def pagination_callback_handler(callback: CallbackQuery) -> None:
 @dp.callback_query(F.data.startswith("ch:"))
 async def channel_selection_handler(callback: CallbackQuery) -> None:
     """
-    When any channel is clicked, immediately opens playback view with:
-    - Primary Web Player (with logo masking original beIN sports logo & watermark).
-    - Primary External Player launcher (VLC / MX Player).
+    When any channel is clicked, shows ONLY VLC Player auto-launch button!
     """
     try:
         parts = callback.data.split(":")
@@ -350,52 +285,18 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         return_page = int(parts[2]) if len(parts) > 2 else 0
 
         detail_text = get_channel_detail_text(channel_idx)
-        markup = build_channel_player_markup(
-            channel_idx=channel_idx,
-            return_page=return_page,
-            include_intent_button=True,
+        markup = build_vlc_only_markup(channel_idx, return_page)
+
+        await callback.message.edit_text(
+            text=detail_text,
+            reply_markup=markup,
+            disable_web_page_preview=True,
         )
-
-        try:
-            await callback.message.edit_text(
-                text=detail_text,
-                reply_markup=markup,
-                disable_web_page_preview=True,
-            )
-        except TelegramBadRequest as bad_req:
-            if "BUTTON_URL_INVALID" in str(bad_req):
-                fallback_markup = build_channel_player_markup(
-                    channel_idx=channel_idx,
-                    return_page=return_page,
-                    include_intent_button=False,
-                )
-                await callback.message.edit_text(
-                    text=detail_text,
-                    reply_markup=fallback_markup,
-                    disable_web_page_preview=True,
-                )
-            else:
-                raise bad_req
-
         await callback.answer()
 
     except Exception as exc:
         logging.error("Error opening channel: %s", exc)
         await callback.answer("⚠️ حدث خطأ أثناء فتح القناة")
-
-
-@dp.callback_query(F.data.startswith("copy:"))
-async def copy_callback_handler(callback: CallbackQuery) -> None:
-    try:
-        parts = callback.data.split(":")
-        channel_idx = int(parts[1])
-        channel_name, _ = CHANNEL_LIST[channel_idx]
-        await callback.answer(
-            f"✅ تم نسخ رابط {channel_name} من الرسالة!",
-            show_alert=True,
-        )
-    except Exception:
-        await callback.answer("✅ الرابط متاح داخل الرسالة للنسخ المباشر")
 
 
 @dp.callback_query(F.data == "noop")
@@ -404,60 +305,126 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. EMBEDDED HTTP WEB SERVER & EXTERNAL PLAYER REDIRECT BRIDGE
+# 6. DIRECT VLC AUTO-LAUNCH REDIRECT ENGINE (HTTP BRIDGE)
 # ---------------------------------------------------------------------------
 async def render_health_handler(request: web.Request) -> web.Response:
     return web.Response(
-        text="aliSTREAM Telegram Live TV Bot is LIVE and running! 🟢",
+        text="aliSTREAM VLC Live TV Bot is LIVE and running! 🟢",
         content_type="text/plain; charset=utf-8",
     )
 
 
-async def web_player_handler(request: web.Request) -> web.Response:
-    """Serves the rich HTML5 Web Player with logo mask and #Alistreamlivebot watermark."""
-    if WEB_PLAYER_FILE.exists():
-        html_content = WEB_PLAYER_FILE.read_text(encoding="utf-8")
-        return web.Response(text=html_content, content_type="text/html; charset=utf-8")
-    return web.Response(text="Web Player not found", status=404)
-
-
-async def vlc_external_bridge_handler(request: web.Request) -> web.Response:
+async def vlc_auto_launch_handler(request: web.Request) -> web.Response:
     """
-    HTTP redirect bridge that automatically launches VLC / External Player on Android!
+    Direct VLC Auto-Launcher:
+    When user taps the button in Telegram, this page opens for a split-second
+    and AUTOMATICALLY fires the Android Intent directly into VLC Player!
+    The channel plays immediately in VLC with hardware acceleration!
     """
-    stream_url = request.query.get("url", "")
+    stream_url = request.query.get("url", "").strip()
     if not stream_url:
         return web.Response(text="Missing stream URL", status=400)
 
-    intent_url = f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;type=video/*;package=org.videolan.vlc;end"
+    # Android intent syntax to directly launch VLC Player with the stream URL
+    vlc_intent = (
+        f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;"
+        f"type=video/*;package=org.videolan.vlc;end"
+    )
 
-    # HTML page that immediately fires the Android Intent
-    html_redirect = f"""<!DOCTYPE html>
-<html>
+    html_launcher = f"""<!DOCTYPE html>
+<html lang="ar" dir="rtl">
 <head>
-    <meta charset="utf-8">
-    <title>جاري فتح مشغل VLC...</title>
-    <script>
-        window.location.href = "{intent_url}";
-        setTimeout(function() {{
-            window.location.href = "{stream_url}";
-        }}, 2000);
-    </script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>تشغيل في VLC</title>
+  <style>
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+      background: #090c12;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 24px;
+      text-align: center;
+    }}
+    .vlc-icon {{
+      font-size: 70px;
+      margin-bottom: 16px;
+      animation: pulse 1.5s infinite;
+    }}
+    @keyframes pulse {{
+      0%, 100% {{ transform: scale(1); }}
+      50% {{ transform: scale(1.08); }}
+    }}
+    h1 {{
+      font-size: 22px;
+      font-weight: 800;
+      color: #ff8800;
+      margin-bottom: 8px;
+    }}
+    p {{
+      color: #8fa0b5;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 28px;
+      max-width: 320px;
+    }}
+    .btn-launch {{
+      background: linear-gradient(135deg, #ff8800, #ff5500);
+      color: #ffffff;
+      padding: 16px 36px;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 800;
+      text-decoration: none;
+      box-shadow: 0 4px 20px rgba(255, 115, 0, 0.45);
+      display: inline-block;
+      transition: transform 0.15s ease;
+    }}
+    .btn-launch:active {{
+      transform: scale(0.97);
+    }}
+    .footer-watermark {{
+      position: absolute;
+      bottom: 25px;
+      color: #00e5ff;
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: 0.8px;
+      text-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+    }}
+  </style>
+  <script>
+    const intentUrl = "{vlc_intent}";
+    // Fire VLC Intent immediately on page load
+    window.location.href = intentUrl;
+
+    // Fallback re-fire
+    setTimeout(function() {{
+      window.location.href = intentUrl;
+    }}, 1200);
+  </script>
 </head>
-<body style="background:#000;color:#fff;text-align:center;padding-top:20%;font-family:sans-serif;">
-    <h2>🎬 جاري فتح القناة في مشغل VLC...</h2>
-    <p>إذا لم يفتح المشغل تلقائياً، <a href="{intent_url}" style="color:#00e5ff;">اضغط هنا للتشغيل</a></p>
+<body>
+  <div class="vlc-icon">🎬</div>
+  <h1>جاري فتح القناة في مشغل VLC...</h1>
+  <p>يتم الآن إطلاق البث المباشر تلقائياً داخل تطبيق VLC على هاتفك بأعلى جودة وبدون تقطيع.</p>
+  <a class="btn-launch" href="{vlc_intent}">🚀 تشغيل الآن في VLC</a>
+  <div class="footer-watermark">#Alistreamlivebot</div>
 </body>
 </html>"""
-    return web.Response(text=html_redirect, content_type="text/html; charset=utf-8")
+    return web.Response(text=html_launcher, content_type="text/html; charset=utf-8")
 
 
 async def start_http_server(port: int) -> web.AppRunner:
     app = web.Application()
     app.router.add_get("/", render_health_handler)
     app.router.add_get("/health", render_health_handler)
-    app.router.add_get("/player", web_player_handler)
-    app.router.add_get("/vlc", vlc_external_bridge_handler)
+    app.router.add_get("/vlc", vlc_auto_launch_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -478,15 +445,17 @@ async def main() -> None:
     logger = logging.getLogger("aliSTREAM.bot")
 
     print("\n" + "=" * 55)
-    print("🚀 بدء تشغيل بوت aliSTREAM Live TV...")
-    print(f"📡 عدد القنوات المحملة: {TOTAL_CHANNELS} قناة عبر {TOTAL_PAGES} صفحات")
+    print("🚀 بدء تشغيل بوت aliSTREAM Live TV (VLC Edition)...")
+    print(f"📡 عدد القنوات المحملة: {TOTAL_CHANNELS} قناة")
+    print(f"🎬 المشغل الأساسي: VLC Player (Auto-Launch)")
+    print(f"🌐 رابط السيرفر: {SERVER_BASE_URL}")
     print("=" * 55 + "\n")
 
     web_port = int(os.getenv("PORT", "8080"))
     http_runner = None
     try:
         http_runner = await start_http_server(web_port)
-        logger.info("✅ Web Server & Player started on port %d (Live 🟢)", web_port)
+        logger.info("✅ VLC Auto-Launch Bridge Server started on port %d (Live 🟢)", web_port)
     except Exception as exc:
         logger.warning("Could not start HTTP server on port %d: %s", web_port, exc)
 
