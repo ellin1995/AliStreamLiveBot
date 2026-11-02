@@ -2,8 +2,25 @@
 =============================================================================
 aliSTREAM Live TV Bot - Production Ready Telegram Streaming Bot
 Framework: aiogram v3 (Modern Asynchronous Python Telegram Bot Framework)
-Environment: Optimized for Linux / Android Termux / VPS / Windows
+Environment: Optimized for Android Termux / Render.com / VPS / Linux / Windows
 Watermark: #Alistreamlive.bot
+=============================================================================
+
+DEPLOYMENT NOTES:
+-----------------
+1. Termux (Android):
+   $ pkg update && pkg upgrade -y
+   $ pkg install python git -y
+   $ pip install -r requirements.txt
+   $ python bot.py
+
+2. Render.com (Cloud Free Tier):
+   - Create as "Web Service" connected to your GitHub repo.
+   - Build Command: pip install -r requirements.txt
+   - Start Command: python bot.py
+   - Render sets the $PORT environment variable automatically.
+   - This script runs an internal HTTP health check server alongside
+     Telegram polling so Render health checks PASS (Live 🟢) and never times out!
 =============================================================================
 """
 
@@ -15,6 +32,7 @@ import sys
 import urllib.parse
 from typing import List, Tuple
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -32,8 +50,6 @@ from aiogram.types import (
 # ---------------------------------------------------------------------------
 # 1. CONFIGURATION & CREDENTIALS
 # ---------------------------------------------------------------------------
-# You can set BOT_TOKEN directly here or via Termux environment variable:
-# export BOT_TOKEN="your_new_token"
 DEFAULT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
 BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
 
@@ -42,7 +58,6 @@ SUPABASE_ANON_KEY = "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h"
 WEB_APP_PLAYER_URL = (
     "https://ddywqmupodubrwlaflem.supabase.co/storage/v1/object/public/web-player/index.html"
 )
-LOGO_URL = "https://a.top4top.io/p_39583wl340.png"
 WATERMARK = "#Alistreamlive.bot"
 
 ITEMS_PER_PAGE = 8
@@ -262,33 +277,14 @@ dp = Dispatcher()
 
 
 async def send_welcome(message: Message) -> None:
-    """Helper function to send the welcome menu reliably and instantly."""
+    """Sends the welcome menu instantly without any external delay."""
     text = get_welcome_text()
     markup = build_channels_page_markup(page=0)
-
-    # 1. Try sending with photo (with short timeout to prevent hanging)
-    sent = False
-    if LOGO_URL:
-        try:
-            await asyncio.wait_for(
-                message.answer_photo(
-                    photo=LOGO_URL,
-                    caption=text,
-                    reply_markup=markup,
-                ),
-                timeout=4.0,  # Never hang if photo host is slow
-            )
-            sent = True
-        except Exception:
-            sent = False
-
-    # 2. Instant guaranteed fallback to text if photo fails or times out
-    if not sent:
-        await message.answer(
-            text=text,
-            reply_markup=markup,
-            disable_web_page_preview=True,
-        )
+    await message.answer(
+        text=text,
+        reply_markup=markup,
+        disable_web_page_preview=True,
+    )
 
 
 @dp.message(CommandStart())
@@ -305,10 +301,7 @@ async def cmd_channels_handler(message: Message) -> None:
 
 @dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة"]))
 async def text_start_handler(message: Message) -> None:
-    """
-    Catches text messages matching start, star, ابدأ, etc.
-    Guarantees response even if user sends text without leading slash!
-    """
+    """Guarantees response even if user sends text without leading slash!"""
     await send_welcome(message)
 
 
@@ -320,17 +313,11 @@ async def pagination_callback_handler(callback: CallbackQuery) -> None:
         markup = build_channels_page_markup(page=page)
         text = get_welcome_text()
 
-        if callback.message.photo:
-            await callback.message.edit_caption(
-                caption=text,
-                reply_markup=markup,
-            )
-        else:
-            await callback.message.edit_text(
-                text=text,
-                reply_markup=markup,
-                disable_web_page_preview=True,
-            )
+        await callback.message.edit_text(
+            text=text,
+            reply_markup=markup,
+            disable_web_page_preview=True,
+        )
         await callback.answer()
     except TelegramBadRequest as exc:
         if "message is not modified" not in str(exc).lower():
@@ -356,36 +343,23 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         )
 
         try:
-            if callback.message.photo:
-                await callback.message.edit_caption(
-                    caption=detail_text,
-                    reply_markup=markup,
-                )
-            else:
-                await callback.message.edit_text(
-                    text=detail_text,
-                    reply_markup=markup,
-                    disable_web_page_preview=True,
-                )
+            await callback.message.edit_text(
+                text=detail_text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
         except TelegramBadRequest as bad_req:
-            # Fallback if Telegram API rejects intent: URL scheme in inline button
             if "BUTTON_URL_INVALID" in str(bad_req):
                 fallback_markup = build_channel_player_markup(
                     channel_idx=channel_idx,
                     return_page=return_page,
                     include_intent_button=False,
                 )
-                if callback.message.photo:
-                    await callback.message.edit_caption(
-                        caption=detail_text,
-                        reply_markup=fallback_markup,
-                    )
-                else:
-                    await callback.message.edit_text(
-                        text=detail_text,
-                        reply_markup=fallback_markup,
-                        disable_web_page_preview=True,
-                    )
+                await callback.message.edit_text(
+                    text=detail_text,
+                    reply_markup=fallback_markup,
+                    disable_web_page_preview=True,
+                )
             else:
                 raise bad_req
 
@@ -416,7 +390,30 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. APPLICATION ENTRYPOINT
+# 6. RENDER.COM HTTP HEALTH CHECK SERVER
+# ---------------------------------------------------------------------------
+async def render_health_handler(request: web.Request) -> web.Response:
+    """Returns 200 OK for Render / UptimeRobot / Koyeb health checks."""
+    return web.Response(
+        text="aliSTREAM Telegram Live TV Bot is LIVE and running! 🟢",
+        content_type="text/plain; charset=utf-8",
+    )
+
+
+async def start_http_server(port: int) -> web.AppRunner:
+    """Starts internal web server so Render marks the deployment as LIVE."""
+    app = web.Application()
+    app.router.add_get("/", render_health_handler)
+    app.router.add_get("/health", render_health_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    return runner
+
+
+# ---------------------------------------------------------------------------
+# 7. APPLICATION ENTRYPOINT
 # ---------------------------------------------------------------------------
 async def main() -> None:
     logging.basicConfig(
@@ -426,10 +423,19 @@ async def main() -> None:
     )
     logger = logging.getLogger("aliSTREAM.bot")
 
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 55)
     print("🚀 بدء تشغيل بوت aliSTREAM Live TV...")
     print(f"📡 عدد القنوات المحملة: {TOTAL_CHANNELS} قناة عبر {TOTAL_PAGES} صفحات")
-    print("=" * 50 + "\n")
+    print("=" * 55 + "\n")
+
+    # Start HTTP server for Render.com or cloud platforms (uses $PORT if present, else 8080)
+    web_port = int(os.getenv("PORT", "8080"))
+    http_runner = None
+    try:
+        http_runner = await start_http_server(web_port)
+        logger.info("✅ Render Web Health Server started on port %d (Live 🟢)", web_port)
+    except Exception as exc:
+        logger.warning("Could not start HTTP server on port %d: %s", web_port, exc)
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -446,26 +452,27 @@ async def main() -> None:
         print("\n" + "!" * 60)
         print("❌ خطأ فادح: توكن البوت غير صالح أو تم إلغاؤه (401 Unauthorized)!")
         print(f"🔑 التوكن المستخدم حالياً: {BOT_TOKEN}")
-        print("💡 الحل:")
-        print("1. افتح تطبيق تيليجرام وتوجه إلى @BotFather")
-        print("2. أرسل الأمر /token واختر البوت الخاص بك للحصول على التوكن الصحيح.")
-        print("3. ضع التوكن الجديد في السطر 39 في ملف bot.py، أو قم بتعيينه عبر:")
-        print("   export BOT_TOKEN='توكنك_هنا'")
         print("!" * 60 + "\n")
+        if http_runner:
+            await http_runner.cleanup()
         await bot.session.close()
         return
     except Exception as exc:
         logger.error("خطأ أثناء التحقق من التوكن: %s", exc)
+        if http_runner:
+            await http_runner.cleanup()
         await bot.session.close()
         return
 
-    # 2. Clear old pending updates & Start Polling
+    # 2. Clear webhook if any, but KEEP pending updates so clicks aren't lost
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
     except Exception as exc:
         logger.error("خطأ أثناء تشغيل البوت: %s", exc)
     finally:
+        if http_runner:
+            await http_runner.cleanup()
         await bot.session.close()
         logger.info("تم إيقاف جلسة البوت بنجاح.")
 
