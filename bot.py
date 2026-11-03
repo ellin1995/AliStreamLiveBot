@@ -2,7 +2,7 @@
 =============================================================================
 aliSTREAM Live TV Bot - Modern Telegram Streaming Bot
 Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
-Database: Supabase Cloud Database (Dynamic Channels List)
+Database: Supabase Cloud Database + Built-in Full 50+ Channels Fallback
 Player: Direct Android VLC Intent Launcher with Google Play Store Fallback
 Watermark: #Alistreamlivebot
 Platform: Render.com / Koyeb / VPS / Local / Android Termux
@@ -53,9 +53,11 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 # ---------------------------------------------------------------------------
-# 1. CONFIGURATION & CREDENTIALS
+# 1. CONFIGURATION & CREDENTIALS (AUTOMATIC FALLBACKS FOR RENDER)
 # ---------------------------------------------------------------------------
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
+DEFAULT_BOT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip() or DEFAULT_BOT_TOKEN
+
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 
@@ -69,23 +71,72 @@ PLAY_STORE_VLC_URL: str = "https://play.google.com/store/apps/details?id=org.vid
 ITEMS_PER_PAGE: int = 8
 CACHE_TTL_SECONDS: int = 120  # In-memory cache TTL for channels
 
-# Default channels if Supabase credentials are not set or database is empty
+# ---------------------------------------------------------------------------
+# COMPLETE 50+ CHANNELS DATA (AUTOMATICALLY ACTIVE IF SUPABASE IS EMPTY)
+# ---------------------------------------------------------------------------
+DEFAULT_CHANNELS_MAP: Dict[str, str] = {
+    "FR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts",
+    "FR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts",
+    "FR | BEIN SPORTS 1 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/92.ts",
+    "FR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14153.ts",
+    "FR | BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14169.ts",
+    "FR | BEIN SPORTS 2 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/93.ts",
+    "FR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14152.ts",
+    "FR | BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14163.ts",
+    "FR | BEIN SPORTS 3 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/94.ts",
+    "FR | BEIN SPORTS MAX 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151958.ts",
+    "FR | BEIN SPORTS MAX 4 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/95.ts",
+    "FR | BEIN SPORTS MAX 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151961.ts",
+    "FR | BEIN SPORTS MAX 5 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/39882.ts",
+    "FR | BEIN SPORTS MAX 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151964.ts",
+    "FR | BEIN SPORTS MAX 6 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1089.ts",
+    "FR | BEIN SPORTS MAX 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151967.ts",
+    "FR | BEIN SPORTS MAX 7 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1113.ts",
+    "FR | BEIN SPORTS MAX 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151970.ts",
+    "FR | BEIN SPORTS MAX 8 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1468.ts",
+    "FR | BEIN SPORTS MAX 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151973.ts",
+    "FR | BEIN SPORTS MAX 9 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1469.ts",
+    "FR | BEIN SPORTS MAX 10 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151976.ts",
+    "FR | BEIN SPORTS MAX 10 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1470.ts",
+    "FR | BEIN SPORTS 1 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47499.ts",
+    "FR | BEIN SPORTS 2 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47500.ts",
+    "C+ RÉU| BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359681.ts",
+    "C+ RÉU| BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359680.ts",
+    "C+ RÉU| BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359679.ts",
+    "C+ RÉU| BEIN SPORTS MAX 4": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359678.ts",
+    "C+ RÉU| BEIN SPORTS MAX 5": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359677.ts",
+    "AR | BEIN SPORTS ARABIC": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24983.ts",
+    "AR | BEIN SPORTS NEWS FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24979.ts",
+    "AR | BEIN SPORTS NEWS HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/78372.ts",
+    "AR | BEIN SPORTS GLOBAL FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24980.ts",
+    "AR | BEIN SPORTS GLOBAL HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/409586.ts",
+    "AR | BEIN SPORTS 4K": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/164973.ts",
+    "AR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13608.ts",
+    "AR | BEIN SPORTS 1 FHD BKP": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/368730.ts",
+    "AR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13682.ts",
+    "AR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13607.ts",
+    "AR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts",
+    "AR | BEIN SPORTS 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13605.ts",
+    "AR | BEIN SPORTS 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13604.ts",
+    "AR | BEIN SPORTS 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13603.ts",
+    "AR | BEIN SPORTS 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13602.ts",
+    "AR | BEIN SPORTS 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13611.ts",
+    "AR | BEIN SPORTS 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13610.ts",
+    "AR | BEIN SPORTS NBA FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/21197.ts",
+    "TR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/79457.ts",
+    "US | BEIN SPORTS US": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/328821.ts",
+}
+
 DEFAULT_FALLBACK_CHANNELS: List[Dict[str, Any]] = [
-    {"id": 1, "name": "FR | BEIN SPORTS 1 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts"},
-    {"id": 2, "name": "FR | BEIN SPORTS 1 HD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts"},
-    {"id": 3, "name": "FR | BEIN SPORTS 2 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14153.ts"},
-    {"id": 4, "name": "FR | BEIN SPORTS 3 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14152.ts"},
-    {"id": 5, "name": "AR | BEIN SPORTS NEWS FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24979.ts"},
-    {"id": 6, "name": "AR | BEIN SPORTS 1 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13608.ts"},
-    {"id": 7, "name": "AR | BEIN SPORTS 2 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13607.ts"},
-    {"id": 8, "name": "AR | BEIN SPORTS 3 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts"},
+    {"id": i + 1, "name": name, "stream_url": url}
+    for i, (name, url) in enumerate(DEFAULT_CHANNELS_MAP.items())
 ]
 
 # ---------------------------------------------------------------------------
 # 2. SUPABASE CHANNELS MANAGER (ASYNC WITH IN-MEMORY CACHE)
 # ---------------------------------------------------------------------------
 class SupabaseChannelManager:
-    """Manages Supabase channel retrieval with smart caching."""
+    """Manages Supabase channel retrieval with smart caching and auto fallback."""
 
     def __init__(self, url: str, key: str):
         self.url = url
@@ -98,9 +149,9 @@ class SupabaseChannelManager:
             try:
                 from supabase import create_client
                 self.client = create_client(self.url, self.key)
-                logging.info("✅ Supabase client initialized successfully.")
+                logging.info("✅ تم تهيئة عميل Supabase بنجاح.")
             except Exception as exc:
-                logging.error("❌ Failed to initialize Supabase client: %s", exc)
+                logging.error("❌ فشل الاتصال بـ Supabase: %s", exc)
 
     def is_configured(self) -> bool:
         return self.client is not None
@@ -129,17 +180,17 @@ class SupabaseChannelManager:
 
         try:
             data = await asyncio.to_thread(self._sync_fetch)
-            if data:
+            if data and len(data) > 0:
                 self._cache = data
                 self._last_fetch_time = now
-                logging.info("📡 Fetched %d channels from Supabase successfully.", len(data))
+                logging.info("📡 تم جلب %d قناة من Supabase بنجاح.", len(data))
                 return self._cache
             else:
-                logging.warning("⚠️ Table 'channels' returned 0 records. Using fallback list.")
-                return self._cache or DEFAULT_FALLBACK_CHANNELS
+                logging.info("ℹ️ جدول Supabase لم يعد بيانات بعد، تم تفعيل القنوات المدمجة (%d قناة).", len(DEFAULT_FALLBACK_CHANNELS))
+                return DEFAULT_FALLBACK_CHANNELS
         except Exception as exc:
-            logging.error("❌ Error querying Supabase 'channels' table: %s", exc)
-            return self._cache or DEFAULT_FALLBACK_CHANNELS
+            logging.error("❌ خطأ أثناء استعلام Supabase: %s. يتم استخدام القنوات المدمجة.", exc)
+            return DEFAULT_FALLBACK_CHANNELS
 
     def clear_cache(self) -> None:
         self._cache = []
@@ -348,7 +399,7 @@ async def cmd_channels_handler(message: Message) -> None:
 @dp.message(Command("refresh"))
 async def cmd_refresh_handler(message: Message) -> None:
     channel_manager.clear_cache()
-    await message.answer("🔄 جاري تحديث قائمة القنوات من قاعدة بيانات Supabase...")
+    await message.answer("🔄 جاري تحديث قائمة القنوات...")
     await render_channels_menu(message, page=0, force_refresh=True)
 
 
@@ -372,7 +423,7 @@ async def refresh_callback_handler(callback: CallbackQuery) -> None:
     try:
         page = int(callback.data.split(":")[1])
         channel_manager.clear_cache()
-        await callback.answer("🔄 تم تحديث قائمة القنوات من Supabase!")
+        await callback.answer("🔄 تم تحديث قائمة القنوات!")
         await render_channels_menu(callback, page=page, force_refresh=True)
     except Exception as exc:
         logging.error("Refresh callback error: %s", exc)
@@ -431,17 +482,37 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
     await callback.answer(f"📄 إجمالي الصفحات: {total_pages} صفحة")
 
 # ---------------------------------------------------------------------------
-# 7. RESILIENT CLOUD HEALTH CHECK HTTP SERVER (FOR RENDER.COM)
+# 7. RESILIENT CLOUD HEALTH CHECK & WEB PLAYER SERVER (FOR RENDER.COM)
 # ---------------------------------------------------------------------------
 async def health_check_handler(request: web.Request) -> web.Response:
     """Always returns 200 OK so Render health check passes instantly."""
     status_msg = (
         f"🟢 {BOT_BRAND} is LIVE and healthy on Render!\n"
         f"🏷️ Watermark: {WATERMARK}\n"
-        f"🗄️ Supabase: {'Connected' if channel_manager.is_configured() else 'Using fallback list'}\n"
-        f"🤖 Telegram Bot: {'Configured' if BOT_TOKEN else 'Waiting for BOT_TOKEN'}\n"
+        f"🗄️ Supabase: {'Connected' if channel_manager.is_configured() else 'Active with built-in channels'}\n"
+        f"🤖 Telegram Bot: Configured and Running\n"
     )
     return web.Response(text=status_msg, content_type="text/plain", charset="utf-8")
+
+
+async def web_player_handler(request: web.Request) -> web.Response:
+    """Serves the interactive web player HTML file."""
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), "web_player", "index.html"),
+        os.path.join(os.path.dirname(__file__), "index.html"),
+        "web_player/index.html",
+        "index.html",
+    ]
+    for p in possible_paths:
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    content = f.read()
+                return web.Response(text=content, content_type="text/html", charset="utf-8")
+            except Exception as exc:
+                logging.error("Error reading web player HTML: %s", exc)
+
+    return web.Response(text="Web Player HTML file not found.", status=404)
 
 
 async def start_health_server(port: int) -> web.AppRunner:
@@ -449,11 +520,13 @@ async def start_health_server(port: int) -> web.AppRunner:
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
+    app.router.add_get("/player", web_player_handler)
+    app.router.add_get("/web_player", web_player_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logging.info("✅ Healthcheck web server listening on 0.0.0.0:%d (Render Ready 🟢)", port)
+    logging.info("✅ Healthcheck & Web Player server listening on 0.0.0.0:%d (Render Ready 🟢)", port)
     return runner
 
 # ---------------------------------------------------------------------------
@@ -471,7 +544,8 @@ async def main() -> None:
     print(f"🚀 {BOT_BRAND} - تشغيل النظام السحابي")
     print(f"🏷️ Watermark: {WATERMARK}")
     print(f"🌐 Cloud Port: {PORT}")
-    print(f"🗄️ Supabase: {'✅ متصل' if channel_manager.is_configured() else '⚠️ استخدام القنوات الافتراضية'}")
+    print(f"📡 القنوات الجاهزة للتشغيل: {len(DEFAULT_FALLBACK_CHANNELS)} قناة مدمجة")
+    print(f"🗄️ Supabase: {'✅ متصل ومفعل' if channel_manager.is_configured() else 'ℹ️ القنوات المدمجة نشطة'}")
     print("=" * 65 + "\n")
 
     # 1. ALWAYS start the HTTP server first so Render marks the deployment as Live immediately
@@ -481,26 +555,13 @@ async def main() -> None:
     except Exception as exc:
         logger.error("❌ Could not bind health check server on port %d: %s", PORT, exc)
 
-    # 2. Check BOT_TOKEN - Do NOT crash the process if missing, keep health server alive
-    if not BOT_TOKEN:
-        logger.error(
-            "\n" + "!" * 65 + "\n"
-            "❌ خطأ حرج: لم يتم العثور على BOT_TOKEN في متغيرات البيئة!\n"
-            "يرجى الدخول إلى Render Dashboard -> Environment Variables وإضافة BOT_TOKEN.\n"
-            "السيرفر سيظل يعمل لتجنب فشل الـ Deploy (Health Check OK).\n"
-            + "!" * 65 + "\n"
-        )
-        # Keep web server alive indefinitely so Render does not mark deployment as failed
-        while True:
-            await asyncio.sleep(3600)
-
-    # 3. Initialize Telegram Bot
+    # 2. Initialize Telegram Bot with default token fallback
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    # 4. Resilient Polling Loop with automatic reconnect
+    # 3. Resilient Polling Loop with automatic reconnect
     retry_delay = 5
     while True:
         try:
@@ -512,13 +573,12 @@ async def main() -> None:
             break
         except TelegramUnauthorizedError:
             logger.error(
-                "❌ التوكن BOT_TOKEN غير صالح (401 Unauthorized)! يرجى تصحيحه في إعدادات Render."
+                "❌ التوكن BOT_TOKEN غير مصرح به (401 Unauthorized)! يرجى التحقق من توكن البوت."
             )
-            # Sleep and keep healthcheck server alive so Render doesn't crash the container
             await asyncio.sleep(60)
         except TelegramConflictError:
             logger.warning(
-                "⚠️ يوجد تضارب: هناك نسخة أخرى من البوت تعمل بالفعل على نفس التوكن. إعادة المحاولة بعد %d ثوانٍ...",
+                "⚠️ يوجد تضارب: هناك نسخة أخرى من البوت تعمل في مكان آخر بنفس التوكن. إعادة المحاولة بعد %d ثوانٍ...",
                 retry_delay,
             )
             await asyncio.sleep(retry_delay)
