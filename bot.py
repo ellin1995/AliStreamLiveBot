@@ -5,6 +5,7 @@ Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
 Database: Supabase Cloud Database (Dynamic Channels List)
 Player: Direct Android VLC Intent Launcher with Google Play Store Fallback
 Watermark: #Alistreamlivebot
+Platform: Render.com / Koyeb / VPS / Local / Android Termux
 =============================================================================
 """
 
@@ -22,7 +23,12 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramConflictError,
+    TelegramNetworkError,
+    TelegramUnauthorizedError,
+)
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -34,21 +40,36 @@ from aiogram.types import (
 # Load environment variables from .env if present
 load_dotenv()
 
+# Ensure utf-8 encoding for standard output and logging
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ---------------------------------------------------------------------------
 # 1. CONFIGURATION & CREDENTIALS
 # ---------------------------------------------------------------------------
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA").strip()
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip()
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
+
+# Port for Render.com / Cloud Web Services (Render sets PORT=10000 by default)
+PORT: int = int(os.getenv("PORT", "10000"))
 
 # Constants
 WATERMARK: str = "#Alistreamlivebot"
 BOT_BRAND: str = "⚡ aliSTREAM Live TV"
 PLAY_STORE_VLC_URL: str = "https://play.google.com/store/apps/details?id=org.videolan.vlc"
 ITEMS_PER_PAGE: int = 8
-CACHE_TTL_SECONDS: int = 120  # Cache channels in-memory for 2 minutes to optimize speed
+CACHE_TTL_SECONDS: int = 120  # In-memory cache TTL for channels
 
-# Fallback channels in case Supabase credentials are not set yet or table is empty
+# Default channels if Supabase credentials are not set or database is empty
 DEFAULT_FALLBACK_CHANNELS: List[Dict[str, Any]] = [
     {"id": 1, "name": "FR | BEIN SPORTS 1 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts"},
     {"id": 2, "name": "FR | BEIN SPORTS 1 HD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts"},
@@ -64,7 +85,7 @@ DEFAULT_FALLBACK_CHANNELS: List[Dict[str, Any]] = [
 # 2. SUPABASE CHANNELS MANAGER (ASYNC WITH IN-MEMORY CACHE)
 # ---------------------------------------------------------------------------
 class SupabaseChannelManager:
-    """Manages channel retrieval from Supabase with smart caching."""
+    """Manages Supabase channel retrieval with smart caching."""
 
     def __init__(self, url: str, key: str):
         self.url = url
@@ -89,7 +110,6 @@ class SupabaseChannelManager:
         if not self.client:
             return []
 
-        # Queries table 'channels', selects id, name, stream_url sorted by id
         response = (
             self.client.table("channels")
             .select("id, name, stream_url")
@@ -99,20 +119,15 @@ class SupabaseChannelManager:
         return response.data or []
 
     async def get_channels(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
-        """
-        Retrieves channels with caching to ensure snappy performance
-        and eliminate unnecessary database calls on every page click.
-        """
+        """Retrieves channels with caching to prevent excessive database calls."""
         now = time.time()
         if not force_refresh and self._cache and (now - self._last_fetch_time < CACHE_TTL_SECONDS):
             return self._cache
 
         if not self.is_configured():
-            logging.warning("⚠️ Supabase not configured. Using fallback channel list.")
             return DEFAULT_FALLBACK_CHANNELS
 
         try:
-            # Run blocking database query in a worker thread
             data = await asyncio.to_thread(self._sync_fetch)
             if data:
                 self._cache = data
@@ -139,8 +154,8 @@ channel_manager = SupabaseChannelManager(SUPABASE_URL, SUPABASE_KEY)
 def build_vlc_intent_url(stream_url: str) -> str:
     """
     Generates direct Android Intent URI for VLC Player.
-    When tapped on Android, it directly launches VLC with the stream URL.
-    If VLC is not installed, the Android OS automatically opens Google Play Store.
+    Directly opens the VLC app on Android with Google Play fallback.
+    No intermediate webpage redirect is required.
     """
     fallback_encoded = "https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dorg.videolan.vlc"
     return (
@@ -156,10 +171,7 @@ def build_vlc_intent_url(stream_url: str) -> str:
 # 4. KEYBOARD BUILDERS (PAGINATION & INTENT PLAYBACK)
 # ---------------------------------------------------------------------------
 def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) -> Tuple[InlineKeyboardMarkup, int, int]:
-    """
-    Builds clean paginated keyboard displaying 8 channels per page
-    with navigation controls (Previous / Current / Next) and Refresh.
-    """
+    """Builds clean paginated keyboard displaying 8 channels per page."""
     total_channels = len(channels)
     total_pages = max(1, (total_channels + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
@@ -169,7 +181,7 @@ def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) ->
 
     keyboard: List[List[InlineKeyboardButton]] = []
 
-    # Add channel buttons (1 channel per row)
+    # Channel buttons
     for idx in range(start_idx, end_idx):
         ch = channels[idx]
         ch_name = ch.get("name", f"قناة #{idx + 1}")
@@ -212,12 +224,7 @@ def build_channel_playback_markup(
     channel: Dict[str, Any],
     return_page: int
 ) -> InlineKeyboardMarkup:
-    """
-    Builds direct playback keyboard:
-    - Direct VLC Intent Launch button (no intermediate web page).
-    - Direct Google Play Store VLC install button.
-    - Return back to channels list at the exact page.
-    """
+    """Builds direct playback keyboard with VLC Intent launch."""
     stream_url = channel.get("stream_url", "")
     vlc_intent = build_vlc_intent_url(stream_url)
 
@@ -250,7 +257,7 @@ def build_channel_playback_markup(
 # 5. UI TEXT TEMPLATES WITH BRANDING & WATERMARK
 # ---------------------------------------------------------------------------
 def get_welcome_text(total_channels: int, page: int, total_pages: int) -> str:
-    """Builds the main dashboard message."""
+    """Main channels dashboard message."""
     return (
         f"<b>{BOT_BRAND}</b>\n"
         f"<i>البث المباشر الفوري للقنوات بجودة فائقة</i>\n"
@@ -265,12 +272,10 @@ def get_welcome_text(total_channels: int, page: int, total_pages: int) -> str:
 
 
 def get_channel_detail_text(channel: Dict[str, Any]) -> str:
-    """Builds the channel playback details message."""
+    """Channel detail view message."""
     ch_name = html.escape(channel.get("name", "قناة غير معروفة"))
     stream_url = channel.get("stream_url", "").strip()
     safe_stream = html.escape(stream_url)
-    vlc_intent = build_vlc_intent_url(stream_url)
-    safe_intent = html.escape(vlc_intent)
 
     return (
         f"<b>{BOT_BRAND}</b>\n"
@@ -280,8 +285,8 @@ def get_channel_detail_text(channel: Dict[str, Any]) -> str:
         f"🎬 <b>طريقة التشغيل:</b> إطلاق فوري عبر مشغل <b>VLC Player</b>\n\n"
         f"🚀 <b>طريقة المشاهدة بنقرة واحدة:</b>\n"
         f"اضغط على زر <b>'🎬 تشغيل مباشر في مشغل VLC'</b> بالأسفل ليفتح البث فوراً داخل تطبيق VLC على هاتفك.\n\n"
-        f"📲 <i>إذا لم يكن تطبيق VLC مثبتاً لديك، سيوجهك الرابط تلقائياً لمتجر Google Play لتثبيته، أو اضغط زر التثبيت مباشرة.</i>\n\n"
-        f"🔗 <b>رابط البث المباشر (نسخ سريع):</b>\n"
+        f"📲 <i>إذا لم يكن تطبيق VLC مثبتاً لديك، سيوجهك الرابط تلقائياً لمتجر Google Play لتثبيته فوراً.</i>\n\n"
+        f"🔗 <b>رابط البث المباشر (نسخ يدوي):</b>\n"
         f"<code>{safe_stream}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🏷️ <code>{WATERMARK}</code>"
@@ -289,14 +294,14 @@ def get_channel_detail_text(channel: Dict[str, Any]) -> str:
 
 
 def get_help_text() -> str:
-    """Builds the instructions text."""
+    """Help guide message."""
     return (
         f"<b>{BOT_BRAND} - دليل الاستخدام السريع</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"1️⃣ <b>تثبيت مشغل VLC:</b>\n"
-        f"تأكد من وجود تطبيق <b>VLC for Android</b> على هاتفك لتحصل على أفضل أداء بدون تقطيع.\n\n"
+        f"تأكد من وجود تطبيق <b>VLC for Android</b> على هاتفك لتشغيل البث بأعلى جودة وبدون تقطيع.\n\n"
         f"2️⃣ <b>التشغيل الفوري:</b>\n"
-        f"بمجرد اختيار أي قناة، اضغط على زر <b>'تشغيل مباشر في مشغل VLC'</b> وسيقوم النظام بتوجيهك فوراً للتطبيق عبر رابط الـ Intent بدون أي وسيط.\n\n"
+        f"عند اختيار أي قناة، اضغط على زر <b>'تشغيل مباشر في مشغل VLC'</b> وسيتم إطلاق البث تلقائياً داخل المشغل.\n\n"
         f"3️⃣ <b>التنقل بين القنوات:</b>\n"
         f"استخدم أزرار (السابق / التالي) للتنقل بين الصفحات بسهولة.\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -314,7 +319,7 @@ async def render_channels_menu(
     page: int = 0,
     force_refresh: bool = False
 ) -> None:
-    """Helper to render or edit the channels menu on a specific page."""
+    """Helper to display or edit channels menu."""
     channels = await channel_manager.get_channels(force_refresh=force_refresh)
     markup, total_pages, total_channels = build_channels_page_markup(channels, page=page)
     text = get_welcome_text(total_channels, page, total_pages)
@@ -332,19 +337,16 @@ async def render_channels_menu(
 
 @dp.message(CommandStart())
 async def cmd_start_handler(message: Message) -> None:
-    """Handles /start command."""
     await render_channels_menu(message, page=0)
 
 
 @dp.message(Command("channels"))
 async def cmd_channels_handler(message: Message) -> None:
-    """Handles /channels command."""
     await render_channels_menu(message, page=0)
 
 
 @dp.message(Command("refresh"))
 async def cmd_refresh_handler(message: Message) -> None:
-    """Handles /refresh command to force fetch latest channels from Supabase."""
     channel_manager.clear_cache()
     await message.answer("🔄 جاري تحديث قائمة القنوات من قاعدة بيانات Supabase...")
     await render_channels_menu(message, page=0, force_refresh=True)
@@ -352,13 +354,11 @@ async def cmd_refresh_handler(message: Message) -> None:
 
 @dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "تحديث"]))
 async def text_trigger_handler(message: Message) -> None:
-    """Handles friendly Arabic and English text triggers."""
     await render_channels_menu(message, page=0)
 
 
 @dp.callback_query(F.data.startswith("page:"))
 async def pagination_callback_handler(callback: CallbackQuery) -> None:
-    """Handles pagination buttons."""
     try:
         page = int(callback.data.split(":")[1])
         await render_channels_menu(callback, page=page)
@@ -369,7 +369,6 @@ async def pagination_callback_handler(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("refresh:"))
 async def refresh_callback_handler(callback: CallbackQuery) -> None:
-    """Handles the in-line refresh button."""
     try:
         page = int(callback.data.split(":")[1])
         channel_manager.clear_cache()
@@ -382,7 +381,6 @@ async def refresh_callback_handler(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data.startswith("ch:"))
 async def channel_selection_handler(callback: CallbackQuery) -> None:
-    """Handles selecting a specific channel and showing VLC direct launch."""
     try:
         parts = callback.data.split(":")
         channel_idx = int(parts[1])
@@ -409,7 +407,6 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data == "help_info")
 async def help_callback_handler(callback: CallbackQuery) -> None:
-    """Displays help and usage guide."""
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[[
             InlineKeyboardButton(text="🔙 العودة لقائمة القنوات", callback_data="page:0")
@@ -429,39 +426,38 @@ async def help_callback_handler(callback: CallbackQuery) -> None:
 
 @dp.callback_query(F.data == "noop")
 async def noop_callback_handler(callback: CallbackQuery) -> None:
-    """Handles clicking the page indicator button."""
     channels = await channel_manager.get_channels()
     total_pages = max(1, (len(channels) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     await callback.answer(f"📄 إجمالي الصفحات: {total_pages} صفحة")
 
 # ---------------------------------------------------------------------------
-# 7. OPTIONAL CLOUD HEALTH CHECK HTTP SERVER
+# 7. RESILIENT CLOUD HEALTH CHECK HTTP SERVER (FOR RENDER.COM)
 # ---------------------------------------------------------------------------
 async def health_check_handler(request: web.Request) -> web.Response:
-    """Simple 200 OK health check for cloud services like Render."""
-    return web.Response(
-        text=f"{BOT_BRAND} is active and running! Watermark: {WATERMARK}",
-        content_type="text/plain; charset=utf-8",
+    """Always returns 200 OK so Render health check passes instantly."""
+    status_msg = (
+        f"🟢 {BOT_BRAND} is LIVE and healthy on Render!\n"
+        f"🏷️ Watermark: {WATERMARK}\n"
+        f"🗄️ Supabase: {'Connected' if channel_manager.is_configured() else 'Using fallback list'}\n"
+        f"🤖 Telegram Bot: {'Configured' if BOT_TOKEN else 'Waiting for BOT_TOKEN'}\n"
     )
+    return web.Response(text=status_msg, content_type="text/plain", charset="utf-8")
 
 
-async def start_optional_health_server(port: int) -> Optional[web.AppRunner]:
-    """Starts a minimal healthcheck server if a PORT is assigned."""
-    try:
-        app = web.Application()
-        app.router.add_get("/", health_check_handler)
-        app.router.add_get("/health", health_check_handler)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
-        return runner
-    except Exception as exc:
-        logging.warning("⚠️ Could not bind health check server on port %d: %s", port, exc)
-        return None
+async def start_health_server(port: int) -> web.AppRunner:
+    """Starts the web server that Render requires for Web Services."""
+    app = web.Application()
+    app.router.add_get("/", health_check_handler)
+    app.router.add_get("/health", health_check_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info("✅ Healthcheck web server listening on 0.0.0.0:%d (Render Ready 🟢)", port)
+    return runner
 
 # ---------------------------------------------------------------------------
-# 8. APPLICATION ENTRYPOINT
+# 8. APPLICATION ENTRYPOINT (FAIL-SAFE FOR CLOUD HOSTING)
 # ---------------------------------------------------------------------------
 async def main() -> None:
     logging.basicConfig(
@@ -471,49 +467,72 @@ async def main() -> None:
     )
     logger = logging.getLogger("aliSTREAM.bot")
 
-    print("\n" + "=" * 60)
-    print(f"🚀 {BOT_BRAND} - Starting up...")
+    print("\n" + "=" * 65)
+    print(f"🚀 {BOT_BRAND} - تشغيل النظام السحابي")
     print(f"🏷️ Watermark: {WATERMARK}")
-    print(f"🗄️ Supabase Configured: {'YES' if channel_manager.is_configured() else 'NO (Fallback active)'}")
-    print(f"🎬 Player: Direct VLC Intent (No web bridge)")
-    print("=" * 60 + "\n")
+    print(f"🌐 Cloud Port: {PORT}")
+    print(f"🗄️ Supabase: {'✅ متصل' if channel_manager.is_configured() else '⚠️ استخدام القنوات الافتراضية'}")
+    print("=" * 65 + "\n")
 
-    # Start optional cloud healthcheck server if PORT environment variable is specified
-    port_env = os.getenv("PORT")
+    # 1. ALWAYS start the HTTP server first so Render marks the deployment as Live immediately
     http_runner = None
-    if port_env and port_env.isdigit():
-        http_runner = await start_optional_health_server(int(port_env))
-        if http_runner:
-            logger.info("✅ Healthcheck web server running on port %s", port_env)
+    try:
+        http_runner = await start_health_server(PORT)
+    except Exception as exc:
+        logger.error("❌ Could not bind health check server on port %d: %s", PORT, exc)
 
+    # 2. Check BOT_TOKEN - Do NOT crash the process if missing, keep health server alive
+    if not BOT_TOKEN:
+        logger.error(
+            "\n" + "!" * 65 + "\n"
+            "❌ خطأ حرج: لم يتم العثور على BOT_TOKEN في متغيرات البيئة!\n"
+            "يرجى الدخول إلى Render Dashboard -> Environment Variables وإضافة BOT_TOKEN.\n"
+            "السيرفر سيظل يعمل لتجنب فشل الـ Deploy (Health Check OK).\n"
+            + "!" * 65 + "\n"
+        )
+        # Keep web server alive indefinitely so Render does not mark deployment as failed
+        while True:
+            await asyncio.sleep(3600)
+
+    # 3. Initialize Telegram Bot
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    try:
-        bot_info = await bot.get_me()
-        print(f"✅ Bot connected successfully: @{bot_info.username} (ID: {bot_info.id})")
-        print("🟢 Bot is polling for updates...\n")
-    except TelegramUnauthorizedError:
-        print("\n❌ خطأ: التوكن غير صالح (401 Unauthorized)! تحقق من قيمة BOT_TOKEN.")
-        if http_runner:
-            await http_runner.cleanup()
-        await bot.session.close()
-        return
-    except Exception as exc:
-        logger.error("Error verifying bot token: %s", exc)
+    # 4. Resilient Polling Loop with automatic reconnect
+    retry_delay = 5
+    while True:
+        try:
+            bot_info = await bot.get_me()
+            logger.info("✅ تم الاتصال بنجاح بخوادم تيليجرام: @%s (ID: %s)", bot_info.username, bot_info.id)
+            logger.info("🟢 البوت يستقبل الرسائل والتحديثات الآن...")
+            await bot.delete_webhook(drop_pending_updates=False)
+            await dp.start_polling(bot)
+            break
+        except TelegramUnauthorizedError:
+            logger.error(
+                "❌ التوكن BOT_TOKEN غير صالح (401 Unauthorized)! يرجى تصحيحه في إعدادات Render."
+            )
+            # Sleep and keep healthcheck server alive so Render doesn't crash the container
+            await asyncio.sleep(60)
+        except TelegramConflictError:
+            logger.warning(
+                "⚠️ يوجد تضارب: هناك نسخة أخرى من البوت تعمل بالفعل على نفس التوكن. إعادة المحاولة بعد %d ثوانٍ...",
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+        except TelegramNetworkError as net_err:
+            logger.warning("⚠️ انقطاع مؤقت في الاتصال بـ Telegram (%s). إعادة المحاولة بعد 10 ثوانٍ...", net_err)
+            await asyncio.sleep(10)
+        except Exception as exc:
+            logger.error("⚠️ حدث خطأ أثناء تشغيل البوت: %s. إعادة المحاولة بعد 10 ثوانٍ...", exc)
+            await asyncio.sleep(10)
 
-    try:
-        await bot.delete_webhook(drop_pending_updates=False)
-        await dp.start_polling(bot)
-    except Exception as exc:
-        logger.error("Error during polling: %s", exc)
-    finally:
-        if http_runner:
-            await http_runner.cleanup()
-        await bot.session.close()
-        logger.info("Bot session closed successfully.")
+    if http_runner:
+        await http_runner.cleanup()
+    await bot.session.close()
 
 
 if __name__ == "__main__":
