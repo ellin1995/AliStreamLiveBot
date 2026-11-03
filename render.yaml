@@ -15,8 +15,4 @@ services:
       - key: PORT
         value: "10000"
       - key: BOT_TOKEN
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_KEY
-        sync: false
+        value: "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
