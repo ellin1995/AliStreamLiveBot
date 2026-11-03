@@ -1,9 +1,9 @@
 """
 =============================================================================
-aliSTREAM Live TV Bot - Production Ready Telegram Streaming Bot
-Framework: aiogram v3 (Modern Asynchronous Python Telegram Bot Framework)
-Environment: Optimized for Android Termux / Render.com / VPS / Linux / Windows
-Player: Exclusive Auto-Launch VLC Integration + Google Play Store Fallback
+aliSTREAM Live TV Bot - Modern Telegram Streaming Bot
+Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
+Database: Supabase Cloud Database (Dynamic Channels List)
+Player: Direct Android VLC Intent Launcher with Google Play Store Fallback
 Watermark: #Alistreamlivebot
 =============================================================================
 """
@@ -13,9 +13,12 @@ import html
 import logging
 import os
 import sys
-import urllib.parse
-from typing import List, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
 from aiohttp import web
+from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -28,399 +31,437 @@ from aiogram.types import (
     Message,
 )
 
+# Load environment variables from .env if present
+load_dotenv()
+
 # ---------------------------------------------------------------------------
 # 1. CONFIGURATION & CREDENTIALS
 # ---------------------------------------------------------------------------
-DEFAULT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
-BOT_TOKEN = os.getenv("BOT_TOKEN", DEFAULT_TOKEN).strip()
+BOT_TOKEN: str = os.getenv("BOT_TOKEN", "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA").strip()
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 
-# Public server URL: Detected automatically from Render environment,
-# or captured dynamically from incoming HTTP health checks, or configured here:
-CUSTOM_SERVER_URL = os.getenv("SERVER_URL", "").strip().rstrip("/")
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
-RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip().rstrip("/")
+# Constants
+WATERMARK: str = "#Alistreamlivebot"
+BOT_BRAND: str = "⚡ aliSTREAM Live TV"
+PLAY_STORE_VLC_URL: str = "https://play.google.com/store/apps/details?id=org.videolan.vlc"
+ITEMS_PER_PAGE: int = 8
+CACHE_TTL_SECONDS: int = 120  # Cache channels in-memory for 2 minutes to optimize speed
 
-if CUSTOM_SERVER_URL:
-    SERVER_BASE_URL = CUSTOM_SERVER_URL
-elif RENDER_URL:
-    SERVER_BASE_URL = RENDER_URL
-elif RENDER_HOST:
-    SERVER_BASE_URL = f"https://{RENDER_HOST}"
-else:
-    # Default local fallback
-    SERVER_BASE_URL = f"http://127.0.0.1:{os.getenv('PORT', '8080')}"
-
-PLAY_STORE_VLC_URL = "https://play.google.com/store/apps/details?id=org.videolan.vlc"
-WATERMARK = "#Alistreamlivebot"
-ITEMS_PER_PAGE = 8
-
-# ---------------------------------------------------------------------------
-# 2. CHANNELS DATA (SECURE BACKGROUND MAPPING)
-# ---------------------------------------------------------------------------
-CHANNELS = {
-    "FR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts",
-    "FR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts",
-    "FR | BEIN SPORTS 1 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/92.ts",
-    "FR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14153.ts",
-    "FR | BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14169.ts",
-    "FR | BEIN SPORTS 2 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/93.ts",
-    "FR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14152.ts",
-    "FR | BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14163.ts",
-    "FR | BEIN SPORTS 3 SD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/94.ts",
-    "FR | BEIN SPORTS MAX 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151958.ts",
-    "FR | BEIN SPORTS MAX 4 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/95.ts",
-    "FR | BEIN SPORTS MAX 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151961.ts",
-    "FR | BEIN SPORTS MAX 5 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/39882.ts",
-    "FR | BEIN SPORTS MAX 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151964.ts",
-    "FR | BEIN SPORTS MAX 6 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1089.ts",
-    "FR | BEIN SPORTS MAX 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151967.ts",
-    "FR | BEIN SPORTS MAX 7 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1113.ts",
-    "FR | BEIN SPORTS MAX 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151970.ts",
-    "FR | BEIN SPORTS MAX 8 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1468.ts",
-    "FR | BEIN SPORTS MAX 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151973.ts",
-    "FR | BEIN SPORTS MAX 9 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1469.ts",
-    "FR | BEIN SPORTS MAX 10 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/151976.ts",
-    "FR | BEIN SPORTS MAX 10 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/1470.ts",
-    "FR | BEIN SPORTS 1 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47499.ts",
-    "FR | BEIN SPORTS 2 |HEVC|": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/47500.ts",
-    "C+ RÉU| BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359681.ts",
-    "C+ RÉU| BEIN SPORTS 2 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359680.ts",
-    "C+ RÉU| BEIN SPORTS 3 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359679.ts",
-    "C+ RÉU| BEIN SPORTS MAX 4": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359678.ts",
-    "C+ RÉU| BEIN SPORTS MAX 5": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/359677.ts",
-    "AR | BEIN SPORTS ARABIC": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24983.ts",
-    "AR | BEIN SPORTS NEWS FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24979.ts",
-    "AR | BEIN SPORTS NEWS HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/78372.ts",
-    "AR | BEIN SPORTS GLOBAL FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24980.ts",
-    "AR | BEIN SPORTS GLOBAL HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/409586.ts",
-    "AR | BEIN SPORTS 4K": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/164973.ts",
-    "AR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13608.ts",
-    "AR | BEIN SPORTS 1 FHD BKP": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/368730.ts",
-    "AR | BEIN SPORTS 1 HD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13682.ts",
-    "AR | BEIN SPORTS 2 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13607.ts",
-    "AR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts",
-    "AR | BEIN SPORTS 3 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts",
-    "AR | BEIN SPORTS 4 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13605.ts",
-    "AR | BEIN SPORTS 5 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13604.ts",
-    "AR | BEIN SPORTS 6 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13603.ts",
-    "AR | BEIN SPORTS 7 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13602.ts",
-    "AR | BEIN SPORTS 8 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13611.ts",
-    "AR | BEIN SPORTS 9 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13610.ts",
-    "AR | BEIN SPORTS NBA FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/21197.ts",
-    "TR | BEIN SPORTS 1 FHD": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/79457.ts",
-    "US | BEIN SPORTS US": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/328821.ts",
-}
-
-CHANNEL_LIST: List[Tuple[str, str]] = list(CHANNELS.items())
-TOTAL_CHANNELS = len(CHANNEL_LIST)
-TOTAL_PAGES = (TOTAL_CHANNELS + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-
-
-def get_vlc_bridge_url(stream_url: str) -> str:
-    """Generates the HTTP bridge URL that auto-launches VLC on Android."""
-    encoded_stream = urllib.parse.quote(stream_url, safe="")
-    return f"{SERVER_BASE_URL}/vlc?url={encoded_stream}"
-
+# Fallback channels in case Supabase credentials are not set yet or table is empty
+DEFAULT_FALLBACK_CHANNELS: List[Dict[str, Any]] = [
+    {"id": 1, "name": "FR | BEIN SPORTS 1 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14160.ts"},
+    {"id": 2, "name": "FR | BEIN SPORTS 1 HD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14170.ts"},
+    {"id": 3, "name": "FR | BEIN SPORTS 2 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14153.ts"},
+    {"id": 4, "name": "FR | BEIN SPORTS 3 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/14152.ts"},
+    {"id": 5, "name": "AR | BEIN SPORTS NEWS FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/24979.ts"},
+    {"id": 6, "name": "AR | BEIN SPORTS 1 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13608.ts"},
+    {"id": 7, "name": "AR | BEIN SPORTS 2 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13607.ts"},
+    {"id": 8, "name": "AR | BEIN SPORTS 3 FHD", "stream_url": "http://tv.gold-pro.xyz:80/live/yqKy0YRZ/f6dUahs/13606.ts"},
+]
 
 # ---------------------------------------------------------------------------
-# 3. KEYBOARD GENERATORS (DIRECT URL LINK TO AUTO-LAUNCH)
+# 2. SUPABASE CHANNELS MANAGER (ASYNC WITH IN-MEMORY CACHE)
 # ---------------------------------------------------------------------------
-def build_channels_page_markup(page: int = 0) -> InlineKeyboardMarkup:
-    """Builds clean paginated channels list where clicking a channel directly opens the auto-launch bridge."""
-    page = max(0, min(page, TOTAL_PAGES - 1))
+class SupabaseChannelManager:
+    """Manages channel retrieval from Supabase with smart caching."""
+
+    def __init__(self, url: str, key: str):
+        self.url = url
+        self.key = key
+        self.client = None
+        self._cache: List[Dict[str, Any]] = []
+        self._last_fetch_time: float = 0.0
+
+        if self.url and self.key:
+            try:
+                from supabase import create_client
+                self.client = create_client(self.url, self.key)
+                logging.info("✅ Supabase client initialized successfully.")
+            except Exception as exc:
+                logging.error("❌ Failed to initialize Supabase client: %s", exc)
+
+    def is_configured(self) -> bool:
+        return self.client is not None
+
+    def _sync_fetch(self) -> List[Dict[str, Any]]:
+        """Synchronously queries the 'channels' table in Supabase."""
+        if not self.client:
+            return []
+
+        # Queries table 'channels', selects id, name, stream_url sorted by id
+        response = (
+            self.client.table("channels")
+            .select("id, name, stream_url")
+            .order("id")
+            .execute()
+        )
+        return response.data or []
+
+    async def get_channels(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        Retrieves channels with caching to ensure snappy performance
+        and eliminate unnecessary database calls on every page click.
+        """
+        now = time.time()
+        if not force_refresh and self._cache and (now - self._last_fetch_time < CACHE_TTL_SECONDS):
+            return self._cache
+
+        if not self.is_configured():
+            logging.warning("⚠️ Supabase not configured. Using fallback channel list.")
+            return DEFAULT_FALLBACK_CHANNELS
+
+        try:
+            # Run blocking database query in a worker thread
+            data = await asyncio.to_thread(self._sync_fetch)
+            if data:
+                self._cache = data
+                self._last_fetch_time = now
+                logging.info("📡 Fetched %d channels from Supabase successfully.", len(data))
+                return self._cache
+            else:
+                logging.warning("⚠️ Table 'channels' returned 0 records. Using fallback list.")
+                return self._cache or DEFAULT_FALLBACK_CHANNELS
+        except Exception as exc:
+            logging.error("❌ Error querying Supabase 'channels' table: %s", exc)
+            return self._cache or DEFAULT_FALLBACK_CHANNELS
+
+    def clear_cache(self) -> None:
+        self._cache = []
+        self._last_fetch_time = 0.0
+
+
+channel_manager = SupabaseChannelManager(SUPABASE_URL, SUPABASE_KEY)
+
+# ---------------------------------------------------------------------------
+# 3. DIRECT VLC INTENT BUILDER
+# ---------------------------------------------------------------------------
+def build_vlc_intent_url(stream_url: str) -> str:
+    """
+    Generates direct Android Intent URI for VLC Player.
+    When tapped on Android, it directly launches VLC with the stream URL.
+    If VLC is not installed, the Android OS automatically opens Google Play Store.
+    """
+    fallback_encoded = "https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dorg.videolan.vlc"
+    return (
+        f"intent:{stream_url}#Intent;"
+        f"action=android.intent.action.VIEW;"
+        f"type=video/*;"
+        f"package=org.videolan.vlc;"
+        f"S.browser_fallback_url={fallback_encoded};"
+        f"end"
+    )
+
+# ---------------------------------------------------------------------------
+# 4. KEYBOARD BUILDERS (PAGINATION & INTENT PLAYBACK)
+# ---------------------------------------------------------------------------
+def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) -> Tuple[InlineKeyboardMarkup, int, int]:
+    """
+    Builds clean paginated keyboard displaying 8 channels per page
+    with navigation controls (Previous / Current / Next) and Refresh.
+    """
+    total_channels = len(channels)
+    total_pages = max(1, (total_channels + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
     start_idx = page * ITEMS_PER_PAGE
-    end_idx = min(start_idx + ITEMS_PER_PAGE, TOTAL_CHANNELS)
+    end_idx = min(start_idx + ITEMS_PER_PAGE, total_channels)
 
     keyboard: List[List[InlineKeyboardButton]] = []
 
+    # Add channel buttons (1 channel per row)
     for idx in range(start_idx, end_idx):
-        channel_name, _ = CHANNEL_LIST[idx]
-        _, stream_url = CHANNEL_LIST[idx]
-        vlc_bridge = get_vlc_bridge_url(stream_url)
-        
-        # جعل زر القناة نفسه يفتح رابط السيرفر الخارجي (الذي يحول تلقائياً لمشغل VLC)
+        ch = channels[idx]
+        ch_name = ch.get("name", f"قناة #{idx + 1}")
         keyboard.append([
             InlineKeyboardButton(
-                text=f"📺 {channel_name}",
-                url=vlc_bridge,
+                text=f"📺 {ch_name}",
+                callback_data=f"ch:{idx}:{page}",
             )
         ])
 
-    # صف التنقل بين الصفحات
+    # Navigation buttons row
     nav_row: List[InlineKeyboardButton] = []
     if page > 0:
         nav_row.append(
-            InlineKeyboardButton(
-                text="⬅️ السابق",
-                callback_data=f"page:{page - 1}",
-            )
+            InlineKeyboardButton(text="⬅️ السابق", callback_data=f"page:{page - 1}")
         )
 
     nav_row.append(
-        InlineKeyboardButton(
-            text=f"📄 {page + 1}/{TOTAL_PAGES}",
-            callback_data="noop",
-        )
+        InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="noop")
     )
 
-    if page < TOTAL_PAGES - 1:
+    if page < total_pages - 1:
         nav_row.append(
-            InlineKeyboardButton(
-                text="التالي ➡️",
-                callback_data=f"page:{page + 1}",
-            )
+            InlineKeyboardButton(text="التالي ➡️", callback_data=f"page:{page + 1}")
         )
 
     keyboard.append(nav_row)
+
+    # Action row (Refresh & Help)
+    keyboard.append([
+        InlineKeyboardButton(text="🔄 تحديث القنوات", callback_data=f"refresh:{page}"),
+        InlineKeyboardButton(text="ℹ️ تعليمات التشغيل", callback_data="help_info"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=keyboard), total_pages, total_channels
+
+
+def build_channel_playback_markup(
+    channel_idx: int,
+    channel: Dict[str, Any],
+    return_page: int
+) -> InlineKeyboardMarkup:
+    """
+    Builds direct playback keyboard:
+    - Direct VLC Intent Launch button (no intermediate web page).
+    - Direct Google Play Store VLC install button.
+    - Return back to channels list at the exact page.
+    """
+    stream_url = channel.get("stream_url", "")
+    vlc_intent = build_vlc_intent_url(stream_url)
+
+    keyboard: List[List[InlineKeyboardButton]] = [
+        # 1. Direct VLC Intent launch button
+        [
+            InlineKeyboardButton(
+                text="🎬 تشغيل مباشر في مشغل VLC",
+                url=vlc_intent,
+            )
+        ],
+        # 2. Google Play Store fallback / install button
+        [
+            InlineKeyboardButton(
+                text="📲 تثبيت تطبيق VLC (Google Play)",
+                url=PLAY_STORE_VLC_URL,
+            )
+        ],
+        # 3. Return back to channels list
+        [
+            InlineKeyboardButton(
+                text="🔙 العودة لقائمة القنوات",
+                callback_data=f"page:{return_page}",
+            )
+        ],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-
 # ---------------------------------------------------------------------------
-# 4. MESSAGE TEXT TEMPLATES
+# 5. UI TEXT TEMPLATES WITH BRANDING & WATERMARK
 # ---------------------------------------------------------------------------
-def get_welcome_text() -> str:
+def get_welcome_text(total_channels: int, page: int, total_pages: int) -> str:
+    """Builds the main dashboard message."""
     return (
-        f"👋 <b>مرحباً بك في بوت aliSTREAM للبث المباشر!</b>\n\n"
-        f"⚽ <b>باقة قنوات beIN SPORTS المشفرة بجودة عالية</b>\n"
-        f"📡 إجمالي القنوات المتاحة: <b>{TOTAL_CHANNELS}</b> قناة\n\n"
-        f"👇 <i>اضغط على أي قناة أدناه ليتم فتحها وانتقالك تلقائياً إلى مشغل VLC الخارجي:</i>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🏷️ <i>{WATERMARK}</i>"
+        f"<b>{BOT_BRAND}</b>\n"
+        f"<i>البث المباشر الفوري للقنوات بجودة فائقة</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📡 <b>إجمالي القنوات المتاحة:</b> <code>{total_channels}</code> قناة\n"
+        f"📄 <b>الصفحة الحالية:</b> <code>{page + 1} / {total_pages}</code>\n"
+        f"⚡ <b>المشغل المدعوم:</b> مشغل <b>VLC Player</b> (تشغيل فوري)\n\n"
+        f"👇 <i>اختر القناة المطلوبة من القائمة أدناه للمشاهدة:</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ <code>{WATERMARK}</code>"
     )
 
 
+def get_channel_detail_text(channel: Dict[str, Any]) -> str:
+    """Builds the channel playback details message."""
+    ch_name = html.escape(channel.get("name", "قناة غير معروفة"))
+    stream_url = channel.get("stream_url", "").strip()
+    safe_stream = html.escape(stream_url)
+    vlc_intent = build_vlc_intent_url(stream_url)
+    safe_intent = html.escape(vlc_intent)
+
+    return (
+        f"<b>{BOT_BRAND}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📺 <b>القناة المختارة:</b> <code>{ch_name}</code>\n"
+        f"🟢 <b>الحالة:</b> بث حي ومباشر (LIVE)\n"
+        f"🎬 <b>طريقة التشغيل:</b> إطلاق فوري عبر مشغل <b>VLC Player</b>\n\n"
+        f"🚀 <b>طريقة المشاهدة بنقرة واحدة:</b>\n"
+        f"اضغط على زر <b>'🎬 تشغيل مباشر في مشغل VLC'</b> بالأسفل ليفتح البث فوراً داخل تطبيق VLC على هاتفك.\n\n"
+        f"📲 <i>إذا لم يكن تطبيق VLC مثبتاً لديك، سيوجهك الرابط تلقائياً لمتجر Google Play لتثبيته، أو اضغط زر التثبيت مباشرة.</i>\n\n"
+        f"🔗 <b>رابط البث المباشر (نسخ سريع):</b>\n"
+        f"<code>{safe_stream}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ <code>{WATERMARK}</code>"
+    )
+
+
+def get_help_text() -> str:
+    """Builds the instructions text."""
+    return (
+        f"<b>{BOT_BRAND} - دليل الاستخدام السريع</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"1️⃣ <b>تثبيت مشغل VLC:</b>\n"
+        f"تأكد من وجود تطبيق <b>VLC for Android</b> على هاتفك لتحصل على أفضل أداء بدون تقطيع.\n\n"
+        f"2️⃣ <b>التشغيل الفوري:</b>\n"
+        f"بمجرد اختيار أي قناة، اضغط على زر <b>'تشغيل مباشر في مشغل VLC'</b> وسيقوم النظام بتوجيهك فوراً للتطبيق عبر رابط الـ Intent بدون أي وسيط.\n\n"
+        f"3️⃣ <b>التنقل بين القنوات:</b>\n"
+        f"استخدم أزرار (السابق / التالي) للتنقل بين الصفحات بسهولة.\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏷️ <code>{WATERMARK}</code>"
+    )
+
 # ---------------------------------------------------------------------------
-# 5. DISPATCHER & HANDLERS
+# 6. DISPATCHER & BOT EVENT HANDLERS
 # ---------------------------------------------------------------------------
 dp = Dispatcher()
 
 
-async def send_welcome(message: Message) -> None:
-    text = get_welcome_text()
-    markup = build_channels_page_markup(page=0)
-    await message.answer(
-        text=text,
-        reply_markup=markup,
-        disable_web_page_preview=True,
-    )
+async def render_channels_menu(
+    target: Message | CallbackQuery,
+    page: int = 0,
+    force_refresh: bool = False
+) -> None:
+    """Helper to render or edit the channels menu on a specific page."""
+    channels = await channel_manager.get_channels(force_refresh=force_refresh)
+    markup, total_pages, total_channels = build_channels_page_markup(channels, page=page)
+    text = get_welcome_text(total_channels, page, total_pages)
+
+    if isinstance(target, Message):
+        await target.answer(text=text, reply_markup=markup, disable_web_page_preview=True)
+    elif isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text=text, reply_markup=markup, disable_web_page_preview=True)
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                logging.error("Telegram edit error: %s", exc)
+        await target.answer()
 
 
 @dp.message(CommandStart())
 async def cmd_start_handler(message: Message) -> None:
-    await send_welcome(message)
+    """Handles /start command."""
+    await render_channels_menu(message, page=0)
 
 
 @dp.message(Command("channels"))
 async def cmd_channels_handler(message: Message) -> None:
-    await send_welcome(message)
+    """Handles /channels command."""
+    await render_channels_menu(message, page=0)
 
 
-@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "vlc"]))
-async def text_start_handler(message: Message) -> None:
-    await send_welcome(message)
+@dp.message(Command("refresh"))
+async def cmd_refresh_handler(message: Message) -> None:
+    """Handles /refresh command to force fetch latest channels from Supabase."""
+    channel_manager.clear_cache()
+    await message.answer("🔄 جاري تحديث قائمة القنوات من قاعدة بيانات Supabase...")
+    await render_channels_menu(message, page=0, force_refresh=True)
+
+
+@dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "تحديث"]))
+async def text_trigger_handler(message: Message) -> None:
+    """Handles friendly Arabic and English text triggers."""
+    await render_channels_menu(message, page=0)
 
 
 @dp.callback_query(F.data.startswith("page:"))
 async def pagination_callback_handler(callback: CallbackQuery) -> None:
+    """Handles pagination buttons."""
     try:
-        _, page_str = callback.data.split(":")
-        page = int(page_str)
-        markup = build_channels_page_markup(page=page)
-        text = get_welcome_text()
+        page = int(callback.data.split(":")[1])
+        await render_channels_menu(callback, page=page)
+    except Exception as exc:
+        logging.error("Pagination callback error: %s", exc)
+        await callback.answer("⚠️ تعذر تحميل الصفحة")
+
+
+@dp.callback_query(F.data.startswith("refresh:"))
+async def refresh_callback_handler(callback: CallbackQuery) -> None:
+    """Handles the in-line refresh button."""
+    try:
+        page = int(callback.data.split(":")[1])
+        channel_manager.clear_cache()
+        await callback.answer("🔄 تم تحديث قائمة القنوات من Supabase!")
+        await render_channels_menu(callback, page=page, force_refresh=True)
+    except Exception as exc:
+        logging.error("Refresh callback error: %s", exc)
+        await callback.answer("⚠️ حدث خطأ أثناء التحديث")
+
+
+@dp.callback_query(F.data.startswith("ch:"))
+async def channel_selection_handler(callback: CallbackQuery) -> None:
+    """Handles selecting a specific channel and showing VLC direct launch."""
+    try:
+        parts = callback.data.split(":")
+        channel_idx = int(parts[1])
+        return_page = int(parts[2]) if len(parts) > 2 else 0
+
+        channels = await channel_manager.get_channels()
+        if 0 <= channel_idx < len(channels):
+            channel = channels[channel_idx]
+            detail_text = get_channel_detail_text(channel)
+            markup = build_channel_playback_markup(channel_idx, channel, return_page)
+
+            await callback.message.edit_text(
+                text=detail_text,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
+            await callback.answer()
+        else:
+            await callback.answer("⚠️ لم يتم العثور على القناة، يرجى تحديث القائمة.")
+    except Exception as exc:
+        logging.error("Channel selection error: %s", exc)
+        await callback.answer("⚠️ تعذر عرض تفاصيل القناة")
+
+
+@dp.callback_query(F.data == "help_info")
+async def help_callback_handler(callback: CallbackQuery) -> None:
+    """Displays help and usage guide."""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🔙 العودة لقائمة القنوات", callback_data="page:0")
+        ]]
+    )
+    try:
         await callback.message.edit_text(
-            text=text,
-            reply_markup=markup,
+            text=get_help_text(),
+            reply_markup=keyboard,
             disable_web_page_preview=True,
         )
         await callback.answer()
-    except TelegramBadRequest as exc:
-        if "message is not modified" not in str(exc).lower():
-            logging.error("Telegram BadRequest in pagination: %s", exc)
-        await callback.answer()
     except Exception as exc:
-        logging.error("Pagination error: %s", exc)
-        await callback.answer("⚠️ تم تحديث القائمة")
+        logging.error("Help callback error: %s", exc)
+        await callback.answer()
 
 
 @dp.callback_query(F.data == "noop")
 async def noop_callback_handler(callback: CallbackQuery) -> None:
-    await callback.answer(f"الصفحة الحالية من أصل {TOTAL_PAGES}")
-
+    """Handles clicking the page indicator button."""
+    channels = await channel_manager.get_channels()
+    total_pages = max(1, (len(channels) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    await callback.answer(f"📄 إجمالي الصفحات: {total_pages} صفحة")
 
 # ---------------------------------------------------------------------------
-# 6. DIRECT VLC AUTO-LAUNCH & PLAY STORE FALLBACK ENGINE
+# 7. OPTIONAL CLOUD HEALTH CHECK HTTP SERVER
 # ---------------------------------------------------------------------------
-async def render_health_handler(request: web.Request) -> web.Response:
-    """
-    Dynamically captures public host from incoming pings (e.g. Render / Koyeb health pings)
-    so SERVER_BASE_URL is always accurate.
-    """
-    global SERVER_BASE_URL
-    host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-    if host and "127.0.0.1" not in host and "localhost" not in host:
-        proto = request.headers.get("X-Forwarded-Proto", "https")
-        detected = f"{proto}://{host}"
-        if SERVER_BASE_URL != detected:
-            SERVER_BASE_URL = detected
-            logging.info("Auto-configured public SERVER_BASE_URL to: %s", SERVER_BASE_URL)
-
+async def health_check_handler(request: web.Request) -> web.Response:
+    """Simple 200 OK health check for cloud services like Render."""
     return web.Response(
-        text="aliSTREAM VLC Live TV Bot is LIVE and running! 🟢",
+        text=f"{BOT_BRAND} is active and running! Watermark: {WATERMARK}",
         content_type="text/plain; charset=utf-8",
     )
 
 
-async def vlc_auto_launch_handler(request: web.Request) -> web.Response:
-    """
-    Direct VLC Auto-Launcher with automatic Google Play Store fallback:
-    1. Triggers Android Intent to launch VLC Player with stream URL instantly.
-    2. If VLC is not installed, automatically redirects to Google Play Store to install VLC.
-    """
-    stream_url = request.query.get("url", "").strip()
-    if not stream_url:
-        return web.Response(text="Missing stream URL parameter", status=400)
-
-    fallback_encoded = urllib.parse.quote(PLAY_STORE_VLC_URL, safe="")
-    vlc_intent = (
-        f"intent:{stream_url}#Intent;action=android.intent.action.VIEW;"
-        f"type=video/*;package=org.videolan.vlc;"
-        f"S.browser_fallback_url={fallback_encoded};end"
-    )
-
-    html_content = f"""<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>تشغيل تلقائي في VLC</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            background: #090c12;
-            color: #ffffff;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            padding: 24px;
-            text-align: center;
-        }}
-        .vlc-icon {{
-            font-size: 70px;
-            margin-bottom: 16px;
-            animation: pulse 1.5s infinite;
-        }}
-        @keyframes pulse {{
-            0%, 100% {{ transform: scale(1); }}
-            50% {{ transform: scale(1.08); }}
-        }}
-        h1 {{
-            font-size: 22px;
-            font-weight: 800;
-            color: #ff8800;
-            margin-bottom: 8px;
-        }}
-        p {{
-            color: #8fa0b5;
-            font-size: 14px;
-            line-height: 1.5;
-            margin-bottom: 24px;
-            max-width: 330px;
-        }}
-        .btn-group {{
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            width: 100%;
-            max-width: 320px;
-        }}
-        .btn {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            padding: 15px 24px;
-            border-radius: 12px;
-            font-size: 15px;
-            font-weight: 800;
-            text-decoration: none;
-            transition: transform 0.15s ease;
-        }}
-        .btn-vlc {{
-            background: linear-gradient(135deg, #ff8800, #ff5500);
-            color: #ffffff;
-            box-shadow: 0 4px 18px rgba(255, 115, 0, 0.45);
-        }}
-        .btn-playstore {{
-            background: #1c2433;
-            color: #38bdf8;
-            border: 1px solid rgba(56, 189, 248, 0.3);
-        }}
-        .btn:active {{ transform: scale(0.97); }}
-        .footer-watermark {{
-            position: absolute;
-            bottom: 25px;
-            color: #00e5ff;
-            font-weight: 800;
-            font-size: 13px;
-            letter-spacing: 0.8px;
-            text-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
-        }}
-    </style>
-    <script>
-        const intentUrl = "{vlc_intent}";
-        const storeUrl = "{PLAY_STORE_VLC_URL}";
-        
-        // 1. Immediately fire Android Intent to launch VLC app directly
-        window.location.href = intentUrl;
-        
-        // 2. Fallback detection: If VLC is not installed, redirect to Google Play
-        let appLaunched = false;
-        window.addEventListener("blur", function() {{
-            appLaunched = true;
-        }});
-        setTimeout(function() {{
-            if (!appLaunched && !document.hidden) {{
-                window.location.href = storeUrl;
-            }}
-        }}, 2000);
-    </script>
-</head>
-<body>
-    <div class="vlc-icon">🎬</div>
-    <h1>جاري نقلك إلى مشغل VLC...</h1>
-    <p>يتم الآن فتح البث المباشر تلقائياً داخل تطبيق VLC على هاتفك.</p>
-    <div class="btn-group">
-        <a class="btn btn-vlc" href="{vlc_intent}">
-            <span>🚀</span> إعادة المحاولة / فتح الفوري
-        </a>
-        <a class="btn btn-playstore" href="{PLAY_STORE_VLC_URL}">
-            <span>📲</span> تثبيت تطبيق VLC من Google Play
-        </a>
-    </div>
-    <div class="footer-watermark">{WATERMARK}</div>
-</body>
-</html>"""
-    return web.Response(text=html_content, content_type="text/html; charset=utf-8")
-
-
-async def start_http_server(port: int) -> web.AppRunner:
-    app = web.Application()
-    app.router.add_get("/", render_health_handler)
-    app.router.add_get("/health", render_health_handler)
-    app.router.add_get("/vlc", vlc_auto_launch_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    return runner
-
+async def start_optional_health_server(port: int) -> Optional[web.AppRunner]:
+    """Starts a minimal healthcheck server if a PORT is assigned."""
+    try:
+        app = web.Application()
+        app.router.add_get("/", health_check_handler)
+        app.router.add_get("/health", health_check_handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        return runner
+    except Exception as exc:
+        logging.warning("⚠️ Could not bind health check server on port %d: %s", port, exc)
+        return None
 
 # ---------------------------------------------------------------------------
-# 7. APPLICATION ENTRYPOINT
+# 8. APPLICATION ENTRYPOINT
 # ---------------------------------------------------------------------------
 async def main() -> None:
     logging.basicConfig(
@@ -430,20 +471,20 @@ async def main() -> None:
     )
     logger = logging.getLogger("aliSTREAM.bot")
 
-    print("\n" + "=" * 55)
-    print("🚀 بدء تشغيل بوت aliSTREAM Live TV...")
-    print(f"📡 إجمالي القنوات: {TOTAL_CHANNELS} قناة")
-    print(f"🎬 النظام: انتقال تلقائي مباشر إلى مشغل VLC الخارجي")
-    print(f"🌐 عنوان السيرفر المبدئي: {SERVER_BASE_URL}")
-    print("=" * 55 + "\n")
+    print("\n" + "=" * 60)
+    print(f"🚀 {BOT_BRAND} - Starting up...")
+    print(f"🏷️ Watermark: {WATERMARK}")
+    print(f"🗄️ Supabase Configured: {'YES' if channel_manager.is_configured() else 'NO (Fallback active)'}")
+    print(f"🎬 Player: Direct VLC Intent (No web bridge)")
+    print("=" * 60 + "\n")
 
-    web_port = int(os.getenv("PORT", "8080"))
+    # Start optional cloud healthcheck server if PORT environment variable is specified
+    port_env = os.getenv("PORT")
     http_runner = None
-    try:
-        http_runner = await start_http_server(web_port)
-        logger.info("✅ HTTP Server started on port %d (Live 🟢)", web_port)
-    except Exception as exc:
-        logger.warning("Could not start HTTP server on port %d: %s", web_port, exc)
+    if port_env and port_env.isdigit():
+        http_runner = await start_optional_health_server(int(port_env))
+        if http_runner:
+            logger.info("✅ Healthcheck web server running on port %s", port_env)
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -452,36 +493,31 @@ async def main() -> None:
 
     try:
         bot_info = await bot.get_me()
-        print(f"✅ تم الاتصال بنجاح بخوادم تيليجرام!")
-        print(f"🤖 اسم البوت: @{bot_info.username} (ID: {bot_info.id})")
-        print("🟢 البوت يعمل الآن وبانتظار ضغطات المستخدمين لتشغيل البث فورا...\n")
+        print(f"✅ Bot connected successfully: @{bot_info.username} (ID: {bot_info.id})")
+        print("🟢 Bot is polling for updates...\n")
     except TelegramUnauthorizedError:
-        print("\n❌ خطأ: التوكن غير مصرح به (401 Unauthorized)!")
+        print("\n❌ خطأ: التوكن غير صالح (401 Unauthorized)! تحقق من قيمة BOT_TOKEN.")
         if http_runner:
             await http_runner.cleanup()
         await bot.session.close()
         return
     except Exception as exc:
-        logger.error("خطأ أثناء التحقق من التوكن: %s", exc)
-        if http_runner:
-            await http_runner.cleanup()
-        await bot.session.close()
-        return
+        logger.error("Error verifying bot token: %s", exc)
 
     try:
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot)
     except Exception as exc:
-        logger.error("خطأ أثناء تشغيل البوت: %s", exc)
+        logger.error("Error during polling: %s", exc)
     finally:
         if http_runner:
             await http_runner.cleanup()
         await bot.session.close()
-        logger.info("تم إيقاف جلسة البوت بنجاح.")
+        logger.info("Bot session closed successfully.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("\n🛑 تم إيقاف البوت يدوياً بواسطة المستخدم.")
+        print("\n🛑 تم إيقاف البوت بنجاح.")
