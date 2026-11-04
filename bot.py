@@ -1,7 +1,6 @@
 """
 =============================================================================
-aliSTREAM Live TV Bot - Modern Telegram Streaming Bot
-Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
+aliSTREAM Live TV Bot - Modern Telegram Streaming Bot Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
 Database: Supabase Cloud Database + Built-in Full 50+ Channels Fallback
 Player: Direct Android VLC Intent Launcher with Google Play Store Fallback
 Watermark: #Alistreamlivebot
@@ -16,10 +15,8 @@ import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
-
 from aiohttp import web
 from dotenv import load_dotenv
-
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -46,6 +43,7 @@ if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
 if hasattr(sys.stderr, "reconfigure"):
     try:
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -57,19 +55,22 @@ if hasattr(sys.stderr, "reconfigure"):
 # ---------------------------------------------------------------------------
 DEFAULT_BOT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip() or DEFAULT_BOT_TOKEN
-
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
 SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
 
 # Port for Render.com / Cloud Web Services (Render sets PORT=10000 by default)
 PORT: int = int(os.getenv("PORT", "10000"))
 
-# Constants
+# Constants & Force Subscription Channel
 WATERMARK: str = "#Alistreamlivebot"
 BOT_BRAND: str = "⚡ aliSTREAM Live TV"
 PLAY_STORE_VLC_URL: str = "https://play.google.com/store/apps/details?id=org.videolan.vlc"
 ITEMS_PER_PAGE: int = 8
 CACHE_TTL_SECONDS: int = 120  # In-memory cache TTL for channels
+
+# إعدادات قناة الاشتراك الإجباري المطلوبة
+REQUIRED_CHANNEL_USERNAME: str = "@alifootball95"
+REQUIRED_CHANNEL_URL: str = "https://t.me/alifootball95"
 
 # ---------------------------------------------------------------------------
 # COMPLETE 50+ CHANNELS DATA (AUTOMATICALLY ACTIVE IF SUPABASE IS EMPTY)
@@ -157,10 +158,8 @@ class SupabaseChannelManager:
         return self.client is not None
 
     def _sync_fetch(self) -> List[Dict[str, Any]]:
-        """Synchronously queries the 'channels' table in Supabase."""
         if not self.client:
             return []
-
         response = (
             self.client.table("channels")
             .select("id, name, stream_url")
@@ -170,7 +169,6 @@ class SupabaseChannelManager:
         return response.data or []
 
     async def get_channels(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
-        """Retrieves channels with caching to prevent excessive database calls."""
         now = time.time()
         if not force_refresh and self._cache and (now - self._last_fetch_time < CACHE_TTL_SECONDS):
             return self._cache
@@ -196,18 +194,37 @@ class SupabaseChannelManager:
         self._cache = []
         self._last_fetch_time = 0.0
 
-
 channel_manager = SupabaseChannelManager(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------------------------------------------------------------------------
-# 3. DIRECT VLC INTENT BUILDER
+# 3. CHECK MEMBERSHIP (FORCE SUBSCRIPTION)
+# ---------------------------------------------------------------------------
+async def check_user_subscription(bot: Bot, user_id: int) -> bool:
+    """التحقق مما إذا كان المستخدم مشتركاً في القناة الإجبارية @alifootball95"""
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_USERNAME, user_id=user_id)
+        # حالات العضوية التي تعتبر اشتراكاً صالحاً
+        if member.status in ["creator", "administrator", "member"]:
+            return True
+        return False
+    except Exception as exc:
+        logging.warning("⚠️ تعذر التحقق من اشتراك المستخدم %s: %s", user_id, exc)
+        # في حال حدوث خطأ تقني في البوت (مثلاً البوت ليس مشرفاً في القناة لتفقد الأعضاء)، نسمح له بالمرور مؤقتاً أو نعتبرها غير مشروط لتجنب التعطيل
+        return True
+
+def get_subscription_markup() -> InlineKeyboardMarkup:
+    """لوحة أزرار الاشتراك الإجباري"""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📢 اشتراك في القناة الرسمية", url=REQUIRED_CHANNEL_URL)],
+            [InlineKeyboardButton(text="✅ لقد اشتركت، تحقق الآن", callback_data="check_sub")]
+        ]
+    )
+
+# ---------------------------------------------------------------------------
+# 4. DIRECT VLC INTENT BUILDER
 # ---------------------------------------------------------------------------
 def build_vlc_intent_url(stream_url: str) -> str:
-    """
-    Generates direct Android Intent URI for VLC Player.
-    Directly opens the VLC app on Android with Google Play fallback.
-    No intermediate webpage redirect is required.
-    """
     fallback_encoded = "https%3A%2F%2Fplay.google.com%2Fstore%2Fapps%2Fdetails%3Fid%3Dorg.videolan.vlc"
     return (
         f"intent:{stream_url}#Intent;"
@@ -219,20 +236,17 @@ def build_vlc_intent_url(stream_url: str) -> str:
     )
 
 # ---------------------------------------------------------------------------
-# 4. KEYBOARD BUILDERS (PAGINATION & INTENT PLAYBACK)
+# 5. KEYBOARD BUILDERS (PAGINATION & INTENT PLAYBACK)
 # ---------------------------------------------------------------------------
 def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) -> Tuple[InlineKeyboardMarkup, int, int]:
-    """Builds clean paginated keyboard displaying 8 channels per page."""
     total_channels = len(channels)
     total_pages = max(1, (total_channels + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
-
+    
     start_idx = page * ITEMS_PER_PAGE
     end_idx = min(start_idx + ITEMS_PER_PAGE, total_channels)
-
     keyboard: List[List[InlineKeyboardButton]] = []
 
-    # Channel buttons
     for idx in range(start_idx, end_idx):
         ch = channels[idx]
         ch_name = ch.get("name", f"قناة #{idx + 1}")
@@ -243,25 +257,14 @@ def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) ->
             )
         ])
 
-    # Navigation buttons row
     nav_row: List[InlineKeyboardButton] = []
     if page > 0:
-        nav_row.append(
-            InlineKeyboardButton(text="⬅️ السابق", callback_data=f"page:{page - 1}")
-        )
-
-    nav_row.append(
-        InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="noop")
-    )
-
+        nav_row.append(InlineKeyboardButton(text="⬅️ السابق", callback_data=f"page:{page - 1}"))
+    nav_row.append(InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
-        nav_row.append(
-            InlineKeyboardButton(text="التالي ➡️", callback_data=f"page:{page + 1}")
-        )
-
+        nav_row.append(InlineKeyboardButton(text="التالي ➡️", callback_data=f"page:{page + 1}"))
     keyboard.append(nav_row)
 
-    # Action row (Refresh & Help)
     keyboard.append([
         InlineKeyboardButton(text="🔄 تحديث القنوات", callback_data=f"refresh:{page}"),
         InlineKeyboardButton(text="ℹ️ تعليمات التشغيل", callback_data="help_info"),
@@ -269,46 +272,20 @@ def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) ->
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard), total_pages, total_channels
 
-
-def build_channel_playback_markup(
-    channel_idx: int,
-    channel: Dict[str, Any],
-    return_page: int
-) -> InlineKeyboardMarkup:
-    """Builds direct playback keyboard with VLC Intent launch."""
+def build_channel_playback_markup(channel_idx: int, channel: Dict[str, Any], return_page: int) -> InlineKeyboardMarkup:
     stream_url = channel.get("stream_url", "")
     vlc_intent = build_vlc_intent_url(stream_url)
-
     keyboard: List[List[InlineKeyboardButton]] = [
-        # 1. Direct VLC Intent launch button
-        [
-            InlineKeyboardButton(
-                text="🎬 تشغيل مباشر في مشغل VLC",
-                url=vlc_intent,
-            )
-        ],
-        # 2. Google Play Store fallback / install button
-        [
-            InlineKeyboardButton(
-                text="📲 تثبيت تطبيق VLC (Google Play)",
-                url=PLAY_STORE_VLC_URL,
-            )
-        ],
-        # 3. Return back to channels list
-        [
-            InlineKeyboardButton(
-                text="🔙 العودة لقائمة القنوات",
-                callback_data=f"page:{return_page}",
-            )
-        ],
+        [InlineKeyboardButton(text="🎬 تشغيل مباشر في مشغل VLC", url=vlc_intent)],
+        [InlineKeyboardButton(text="📲 تثبيت تطبيق VLC (Google Play)", url=PLAY_STORE_VLC_URL)],
+        [InlineKeyboardButton(text="🔙 العودة لقائمة القنوات", callback_data=f"page:{return_page}")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 # ---------------------------------------------------------------------------
-# 5. UI TEXT TEMPLATES WITH BRANDING & WATERMARK
+# 6. UI TEXT TEMPLATES WITH BRANDING & WATERMARK
 # ---------------------------------------------------------------------------
 def get_welcome_text(total_channels: int, page: int, total_pages: int) -> str:
-    """Main channels dashboard message."""
     return (
         f"<b>{BOT_BRAND}</b>\n"
         f"<i>البث المباشر الفوري للقنوات بجودة فائقة</i>\n"
@@ -321,13 +298,10 @@ def get_welcome_text(total_channels: int, page: int, total_pages: int) -> str:
         f"🏷️ <code>{WATERMARK}</code>"
     )
 
-
 def get_channel_detail_text(channel: Dict[str, Any]) -> str:
-    """Channel detail view message."""
     ch_name = html.escape(channel.get("name", "قناة غير معروفة"))
     stream_url = channel.get("stream_url", "").strip()
     safe_stream = html.escape(stream_url)
-
     return (
         f"<b>{BOT_BRAND}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -343,9 +317,7 @@ def get_channel_detail_text(channel: Dict[str, Any]) -> str:
         f"🏷️ <code>{WATERMARK}</code>"
     )
 
-
 def get_help_text() -> str:
-    """Help guide message."""
     return (
         f"<b>{BOT_BRAND} - دليل الاستخدام السريع</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -360,17 +332,29 @@ def get_help_text() -> str:
     )
 
 # ---------------------------------------------------------------------------
-# 6. DISPATCHER & BOT EVENT HANDLERS
+# 7. DISPATCHER & BOT EVENT HANDLERS
 # ---------------------------------------------------------------------------
 dp = Dispatcher()
 
+async def render_channels_menu(target: Message | CallbackQuery, page: int = 0, force_refresh: bool = False) -> None:
+    bot_obj = target.bot if isinstance(target, CallbackQuery) else target.bot
+    user_id = target.from_user.id
 
-async def render_channels_menu(
-    target: Message | CallbackQuery,
-    page: int = 0,
-    force_refresh: bool = False
-) -> None:
-    """Helper to display or edit channels menu."""
+    # التحقق من الاشتراك الإجباري أولاً
+    is_subscribed = await check_user_subscription(bot_obj, user_id)
+    if not is_subscribed:
+        sub_text = (
+            f"🚨 <b>عذراً، يجب عليك الاشتراك في قناة البوت أولاً لاستخدامه!</b>\n\n"
+            f"📢 قناة البوت الرسمية: <a href='{REQUIRED_CHANNEL_URL}'>@alifootball95</a>\n\n"
+            f"👇 اشترك في القناة ثم اضغط على زر <b>'تحقق الآن'</b> بالأسفل:"
+        )
+        if isinstance(target, Message):
+            await target.answer(text=sub_text, reply_markup=get_subscription_markup(), disable_web_page_preview=True)
+        elif isinstance(target, CallbackQuery):
+            await target.message.edit_text(text=sub_text, reply_markup=get_subscription_markup(), disable_web_page_preview=True)
+            await target.answer("⚠️ يرجى الاشتراك في القناة أولاً!", show_alert=True)
+        return
+
     channels = await channel_manager.get_channels(force_refresh=force_refresh)
     markup, total_pages, total_channels = build_channels_page_markup(channels, page=page)
     text = get_welcome_text(total_channels, page, total_pages)
@@ -385,16 +369,13 @@ async def render_channels_menu(
                 logging.error("Telegram edit error: %s", exc)
         await target.answer()
 
-
 @dp.message(CommandStart())
 async def cmd_start_handler(message: Message) -> None:
     await render_channels_menu(message, page=0)
 
-
 @dp.message(Command("channels"))
 async def cmd_channels_handler(message: Message) -> None:
     await render_channels_menu(message, page=0)
-
 
 @dp.message(Command("refresh"))
 async def cmd_refresh_handler(message: Message) -> None:
@@ -402,11 +383,21 @@ async def cmd_refresh_handler(message: Message) -> None:
     await message.answer("🔄 جاري تحديث قائمة القنوات...")
     await render_channels_menu(message, page=0, force_refresh=True)
 
-
 @dp.message(F.text.lower().in_(["start", "star", "ابدأ", "ابدا", "قنوات", "القنوات", "menu", "قائمة", "تحديث"]))
 async def text_trigger_handler(message: Message) -> None:
     await render_channels_menu(message, page=0)
 
+@dp.callback_query(F.data == "check_sub")
+async def check_subscription_callback(callback: CallbackQuery) -> None:
+    bot_obj = callback.bot
+    user_id = callback.from_user.id
+    is_subscribed = await check_user_subscription(bot_obj, user_id)
+    
+    if is_subscribed:
+        await callback.answer("✅ شكراً لك! تم التحقق من اشتراكك بنجاح.", show_alert=True)
+        await render_channels_menu(callback, page=0)
+    else:
+        await callback.answer("❌ لم تقم بالاشتراك في القناة بعد! يرجى الاشتراك أولاً.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("page:"))
 async def pagination_callback_handler(callback: CallbackQuery) -> None:
@@ -416,7 +407,6 @@ async def pagination_callback_handler(callback: CallbackQuery) -> None:
     except Exception as exc:
         logging.error("Pagination callback error: %s", exc)
         await callback.answer("⚠️ تعذر تحميل الصفحة")
-
 
 @dp.callback_query(F.data.startswith("refresh:"))
 async def refresh_callback_handler(callback: CallbackQuery) -> None:
@@ -428,7 +418,6 @@ async def refresh_callback_handler(callback: CallbackQuery) -> None:
     except Exception as exc:
         logging.error("Refresh callback error: %s", exc)
         await callback.answer("⚠️ حدث خطأ أثناء التحديث")
-
 
 @dp.callback_query(F.data.startswith("ch:"))
 async def channel_selection_handler(callback: CallbackQuery) -> None:
@@ -442,7 +431,6 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
             channel = channels[channel_idx]
             detail_text = get_channel_detail_text(channel)
             markup = build_channel_playback_markup(channel_idx, channel, return_page)
-
             await callback.message.edit_text(
                 text=detail_text,
                 reply_markup=markup,
@@ -455,13 +443,10 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         logging.error("Channel selection error: %s", exc)
         await callback.answer("⚠️ تعذر عرض تفاصيل القناة")
 
-
 @dp.callback_query(F.data == "help_info")
 async def help_callback_handler(callback: CallbackQuery) -> None:
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 العودة لقائمة القنوات", callback_data="page:0")
-        ]]
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 العودة لقائمة القنوات", callback_data="page:0")]]
     )
     try:
         await callback.message.edit_text(
@@ -474,7 +459,6 @@ async def help_callback_handler(callback: CallbackQuery) -> None:
         logging.error("Help callback error: %s", exc)
         await callback.answer()
 
-
 @dp.callback_query(F.data == "noop")
 async def noop_callback_handler(callback: CallbackQuery) -> None:
     channels = await channel_manager.get_channels()
@@ -482,21 +466,19 @@ async def noop_callback_handler(callback: CallbackQuery) -> None:
     await callback.answer(f"📄 إجمالي الصفحات: {total_pages} صفحة")
 
 # ---------------------------------------------------------------------------
-# 7. RESILIENT CLOUD HEALTH CHECK & WEB PLAYER SERVER (FOR RENDER.COM)
+# 8. RESILIENT CLOUD HEALTH CHECK & WEB PLAYER SERVER (FOR RENDER.COM)
 # ---------------------------------------------------------------------------
 async def health_check_handler(request: web.Request) -> web.Response:
-    """Always returns 200 OK so Render health check passes instantly."""
     status_msg = (
         f"🟢 {BOT_BRAND} is LIVE and healthy on Render!\n"
         f"🏷️ Watermark: {WATERMARK}\n"
+        f"📢 Required Channel: {REQUIRED_CHANNEL_USERNAME}\n"
         f"🗄️ Supabase: {'Connected' if channel_manager.is_configured() else 'Active with built-in channels'}\n"
         f"🤖 Telegram Bot: Configured and Running\n"
     )
     return web.Response(text=status_msg, content_type="text/plain", charset="utf-8")
 
-
 async def web_player_handler(request: web.Request) -> web.Response:
-    """Serves the interactive web player HTML file."""
     possible_paths = [
         os.path.join(os.path.dirname(__file__), "web_player", "index.html"),
         os.path.join(os.path.dirname(__file__), "index.html"),
@@ -511,12 +493,9 @@ async def web_player_handler(request: web.Request) -> web.Response:
                 return web.Response(text=content, content_type="text/html", charset="utf-8")
             except Exception as exc:
                 logging.error("Error reading web player HTML: %s", exc)
-
     return web.Response(text="Web Player HTML file not found.", status=404)
 
-
 async def start_health_server(port: int) -> web.AppRunner:
-    """Starts the web server that Render requires for Web Services."""
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
@@ -530,7 +509,7 @@ async def start_health_server(port: int) -> web.AppRunner:
     return runner
 
 # ---------------------------------------------------------------------------
-# 8. APPLICATION ENTRYPOINT (FAIL-SAFE FOR CLOUD HOSTING)
+# 9. APPLICATION ENTRYPOINT (FAIL-SAFE FOR CLOUD HOSTING)
 # ---------------------------------------------------------------------------
 async def main() -> None:
     logging.basicConfig(
@@ -539,29 +518,26 @@ async def main() -> None:
         handlers=[logging.StreamHandler(sys.stdout)],
     )
     logger = logging.getLogger("aliSTREAM.bot")
-
     print("\n" + "=" * 65)
     print(f"🚀 {BOT_BRAND} - تشغيل النظام السحابي")
     print(f"🏷️ Watermark: {WATERMARK}")
+    print(f"📢 قناة الاشتراك الإجباري: {REQUIRED_CHANNEL_USERNAME}")
     print(f"🌐 Cloud Port: {PORT}")
     print(f"📡 القنوات الجاهزة للتشغيل: {len(DEFAULT_FALLBACK_CHANNELS)} قناة مدمجة")
     print(f"🗄️ Supabase: {'✅ متصل ومفعل' if channel_manager.is_configured() else 'ℹ️ القنوات المدمجة نشطة'}")
     print("=" * 65 + "\n")
 
-    # 1. ALWAYS start the HTTP server first so Render marks the deployment as Live immediately
     http_runner = None
     try:
         http_runner = await start_health_server(PORT)
     except Exception as exc:
         logger.error("❌ Could not bind health check server on port %d: %s", PORT, exc)
 
-    # 2. Initialize Telegram Bot with default token fallback
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    # 3. Resilient Polling Loop with automatic reconnect
     retry_delay = 5
     while True:
         try:
@@ -572,15 +548,10 @@ async def main() -> None:
             await dp.start_polling(bot)
             break
         except TelegramUnauthorizedError:
-            logger.error(
-                "❌ التوكن BOT_TOKEN غير مصرح به (401 Unauthorized)! يرجى التحقق من توكن البوت."
-            )
+            logger.error("❌ التوكن BOT_TOKEN غير مصرح به (401 Unauthorized)! يرجى التحقق من توكن البوت.")
             await asyncio.sleep(60)
         except TelegramConflictError:
-            logger.warning(
-                "⚠️ يوجد تضارب: هناك نسخة أخرى من البوت تعمل في مكان آخر بنفس التوكن. إعادة المحاولة بعد %d ثوانٍ...",
-                retry_delay,
-            )
+            logger.warning("⚠️ يوجد تضارب: هناك نسخة أخرى تعمل بنفس التوكن. إعادة المحاولة بعد %d ثوانٍ...", retry_delay)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
         except TelegramNetworkError as net_err:
@@ -593,7 +564,6 @@ async def main() -> None:
     if http_runner:
         await http_runner.cleanup()
     await bot.session.close()
-
 
 if __name__ == "__main__":
     try:
