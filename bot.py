@@ -1,6 +1,7 @@
 """
 =============================================================================
-aliSTREAM Live TV Bot - Modern Telegram Streaming Bot Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
+aliSTREAM Live TV Bot - Modern Telegram Streaming Bot
+Framework: aiogram v3 (Asynchronous Telegram Bot Framework)
 Database: Supabase Cloud Database + Built-in Full 50+ Channels Fallback
 Player: Direct Android VLC Intent Launcher with Google Play Store Fallback
 Watermark: #Alistreamlivebot
@@ -15,6 +16,7 @@ import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
 from aiohttp import web
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
@@ -53,10 +55,11 @@ if hasattr(sys.stderr, "reconfigure"):
 # ---------------------------------------------------------------------------
 # 1. CONFIGURATION & CREDENTIALS (AUTOMATIC FALLBACKS FOR RENDER)
 # ---------------------------------------------------------------------------
-DEFAULT_BOT_TOKEN = "9238910404:AAFX1hGTJGENTAzvb8q6CL3QjpfR1DoAKYA"
+DEFAULT_BOT_TOKEN = "9240172777:AAFOkxGabWTUgNyaYaPvYES3tADFp0GMVnw"
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip() or DEFAULT_BOT_TOKEN
-SUPABASE_URL: str = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "").strip()
+
+SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://ddywqmupodubrwlaflem.supabase.co").strip().rstrip("/")
+SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "sb_publishable_r1wS_YGGkexuVtRvvBy40Q_Qm-i672h").strip()
 
 # Port for Render.com / Cloud Web Services (Render sets PORT=10000 by default)
 PORT: int = int(os.getenv("PORT", "10000"))
@@ -138,7 +141,6 @@ DEFAULT_FALLBACK_CHANNELS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 class SupabaseChannelManager:
     """Manages Supabase channel retrieval with smart caching and auto fallback."""
-
     def __init__(self, url: str, key: str):
         self.url = url
         self.key = key
@@ -203,13 +205,11 @@ async def check_user_subscription(bot: Bot, user_id: int) -> bool:
     """التحقق مما إذا كان المستخدم مشتركاً في القناة الإجبارية @alifootball95"""
     try:
         member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL_USERNAME, user_id=user_id)
-        # حالات العضوية التي تعتبر اشتراكاً صالحاً
         if member.status in ["creator", "administrator", "member"]:
             return True
         return False
     except Exception as exc:
         logging.warning("⚠️ تعذر التحقق من اشتراك المستخدم %s: %s", user_id, exc)
-        # في حال حدوث خطأ تقني في البوت (مثلاً البوت ليس مشرفاً في القناة لتفقد الأعضاء)، نسمح له بالمرور مؤقتاً أو نعتبرها غير مشروط لتجنب التعطيل
         return True
 
 def get_subscription_markup() -> InlineKeyboardMarkup:
@@ -245,8 +245,8 @@ def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) ->
     
     start_idx = page * ITEMS_PER_PAGE
     end_idx = min(start_idx + ITEMS_PER_PAGE, total_channels)
+    
     keyboard: List[List[InlineKeyboardButton]] = []
-
     for idx in range(start_idx, end_idx):
         ch = channels[idx]
         ch_name = ch.get("name", f"قناة #{idx + 1}")
@@ -256,20 +256,20 @@ def build_channels_page_markup(channels: List[Dict[str, Any]], page: int = 0) ->
                 callback_data=f"ch:{idx}:{page}",
             )
         ])
-
+    
     nav_row: List[InlineKeyboardButton] = []
     if page > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ السابق", callback_data=f"page:{page - 1}"))
     nav_row.append(InlineKeyboardButton(text=f"📄 {page + 1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
         nav_row.append(InlineKeyboardButton(text="التالي ➡️", callback_data=f"page:{page + 1}"))
+    
     keyboard.append(nav_row)
-
     keyboard.append([
         InlineKeyboardButton(text="🔄 تحديث القنوات", callback_data=f"refresh:{page}"),
         InlineKeyboardButton(text="ℹ️ تعليمات التشغيل", callback_data="help_info"),
     ])
-
+    
     return InlineKeyboardMarkup(inline_keyboard=keyboard), total_pages, total_channels
 
 def build_channel_playback_markup(channel_idx: int, channel: Dict[str, Any], return_page: int) -> InlineKeyboardMarkup:
@@ -340,7 +340,6 @@ async def render_channels_menu(target: Message | CallbackQuery, page: int = 0, f
     bot_obj = target.bot if isinstance(target, CallbackQuery) else target.bot
     user_id = target.from_user.id
 
-    # التحقق من الاشتراك الإجباري أولاً
     is_subscribed = await check_user_subscription(bot_obj, user_id)
     if not is_subscribed:
         sub_text = (
@@ -392,7 +391,6 @@ async def check_subscription_callback(callback: CallbackQuery) -> None:
     bot_obj = callback.bot
     user_id = callback.from_user.id
     is_subscribed = await check_user_subscription(bot_obj, user_id)
-    
     if is_subscribed:
         await callback.answer("✅ شكراً لك! تم التحقق من اشتراكك بنجاح.", show_alert=True)
         await render_channels_menu(callback, page=0)
@@ -425,7 +423,6 @@ async def channel_selection_handler(callback: CallbackQuery) -> None:
         parts = callback.data.split(":")
         channel_idx = int(parts[1])
         return_page = int(parts[2]) if len(parts) > 2 else 0
-
         channels = await channel_manager.get_channels()
         if 0 <= channel_idx < len(channels):
             channel = channels[channel_idx]
@@ -518,6 +515,7 @@ async def main() -> None:
         handlers=[logging.StreamHandler(sys.stdout)],
     )
     logger = logging.getLogger("aliSTREAM.bot")
+    
     print("\n" + "=" * 65)
     print(f"🚀 {BOT_BRAND} - تشغيل النظام السحابي")
     print(f"🏷️ Watermark: {WATERMARK}")
