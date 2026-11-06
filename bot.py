@@ -55,7 +55,7 @@ if hasattr(sys.stderr, "reconfigure"):
 # ---------------------------------------------------------------------------
 # 1. CONFIGURATION & CREDENTIALS (AUTOMATIC FALLBACKS FOR RENDER)
 # ---------------------------------------------------------------------------
-DEFAULT_BOT_TOKEN = "9240172777:AAFOkxGabWTUgNyaYaPvYES3tADFp0GMVnw"
+DEFAULT_BOT_TOKEN = "9240172777:AAGQGINWChozTbzwHYUcGc5902mr7pfHdVw"
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "").strip() or DEFAULT_BOT_TOKEN
 
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://ddywqmupodubrwlaflem.supabase.co").strip().rstrip("/")
